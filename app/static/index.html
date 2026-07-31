@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="内网音视频异步转写工作台，基于 Faster-Whisper。"
+    />
+    <title>声迹 · 转写工作台</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css?v=0.1.5" />
+    <script src="/static/upload-id.js?v=0.1.5" defer></script>
+    <script src="/static/app.js?v=0.1.5" defer></script>
+  </head>
+  <body>
+    <div class="ambient-grid" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="/" aria-label="声迹首页">
+          <span class="brand-mark" aria-hidden="true">
+            <i></i><i></i><i></i><i></i><i></i>
+          </span>
+          <span>
+            <strong>声迹</strong>
+            <small>TRANSCRIPTION DESK</small>
+          </span>
+        </a>
+        <div class="topbar-meta">
+          <span class="network-label">LOCAL / INTRANET</span>
+          <button class="status-pill" id="statusPill" type="button">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="statusPillText">正在连接</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow"><span>01</span> AUDIO → TEXT</p>
+          <h1>把漫长录音，<br /><em>变成可检索的文字。</em></h1>
+          <p class="hero-note">
+            上传后即可离开。任务会在后台排队处理，结果自动整理为文本、字幕和结构化数据。
+          </p>
+        </div>
+        <aside class="telemetry" aria-label="服务运行状态">
+          <div class="telemetry-head">
+            <span>ENGINE TELEMETRY</span>
+            <time id="clock">--:--:--</time>
+          </div>
+          <dl>
+            <div>
+              <dt>Worker</dt>
+              <dd id="workerState">连接中</dd>
+            </div>
+            <div>
+              <dt>设备</dt>
+              <dd id="deviceState">—</dd>
+            </div>
+            <div>
+              <dt>已加载模型</dt>
+              <dd id="modelState">—</dd>
+            </div>
+            <div>
+              <dt>队列</dt>
+              <dd><b id="queueCount">0</b> 项</dd>
+            </div>
+          </dl>
+          <div class="disk-meter">
+            <span><i id="diskBar"></i></span>
+            <small id="diskLabel">存储空间读取中</small>
+          </div>
+        </aside>
+      </section>
+
+      <section class="upload-studio" aria-labelledby="uploadTitle">
+        <div class="section-label">
+          <span>NEW SESSION</span>
+          <b>+</b>
+        </div>
+        <div class="upload-layout">
+          <div
+            class="drop-zone"
+            id="dropZone"
+            tabindex="0"
+            role="button"
+            aria-labelledby="uploadTitle uploadHint"
+          >
+            <input
+              id="fileInput"
+              type="file"
+              multiple
+              hidden
+              accept=".mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.aiff,.mp4,.mov,.mkv,.avi,.webm,.wmv,.m4v,.mpeg,.mpg"
+            />
+            <div class="drop-icon" aria-hidden="true">
+              <span></span>
+              <i></i>
+            </div>
+            <div>
+              <h2 id="uploadTitle">拖入音频或视频</h2>
+              <p id="uploadHint">也可以点击选择多个文件</p>
+            </div>
+            <button class="choose-button" id="chooseButton" type="button">
+              选择文件 <span>↗</span>
+            </button>
+          </div>
+
+          <div class="session-settings">
+            <div class="settings-title">
+              <span>本批任务设置</span>
+              <small>上传时固定到每个任务</small>
+            </div>
+            <label class="field">
+              <span>转写模型</span>
+              <select id="modelSelect" aria-label="转写模型">
+                <option>载入中…</option>
+              </select>
+              <small id="modelHint">模型越大，通常质量越高、处理越慢。</small>
+            </label>
+            <label class="field">
+              <span>音频语言</span>
+              <select id="languageSelect" aria-label="音频语言">
+                <option value="auto">自动检测</option>
+              </select>
+              <small>已知语言时手动选择，可跳过语言检测。</small>
+            </label>
+            <div class="limit-note">
+              <span>LIMIT</span>
+              <p id="uploadLimit">正在读取服务限制…</p>
+            </div>
+          </div>
+        </div>
+        <div class="upload-queue" id="uploadQueue" aria-live="polite"></div>
+      </section>
+
+      <section class="tasks" aria-labelledby="tasksTitle">
+        <div class="tasks-head">
+          <div>
+            <p class="eyebrow"><span>02</span> ARCHIVE / QUEUE</p>
+            <h2 id="tasksTitle">任务记录</h2>
+          </div>
+          <div class="tasks-tools">
+            <label class="search-box">
+              <span aria-hidden="true"></span>
+              <input
+                id="searchInput"
+                type="search"
+                placeholder="搜索文件名"
+                autocomplete="off"
+              />
+            </label>
+            <button class="icon-button" id="refreshButton" title="立即刷新" type="button">
+              ↻
+            </button>
+          </div>
+        </div>
+
+        <nav class="filters" id="statusFilters" aria-label="任务状态筛选">
+          <button class="active" type="button" data-status="">全部</button>
+          <button type="button" data-status="running">处理中</button>
+          <button type="button" data-status="queued">排队</button>
+          <button type="button" data-status="succeeded">已完成</button>
+          <button type="button" data-status="failed">失败</button>
+          <button type="button" data-status="cancelled">已取消</button>
+        </nav>
+
+        <div class="task-table-head" aria-hidden="true">
+          <span>媒体 / 创建时间</span>
+          <span>模型</span>
+          <span>状态 / 进度</span>
+          <span>时长 / 耗时</span>
+          <span>操作</span>
+        </div>
+        <div class="task-list" id="taskList" aria-live="polite">
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+          <div class="skeleton-row"></div>
+        </div>
+        <div class="pagination">
+          <p id="resultCount">—</p>
+          <div>
+            <button id="prevPage" type="button">← 上一页</button>
+            <span id="pageLabel">1 / 1</span>
+            <button id="nextPage" type="button">下一页 →</button>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <span>FASTER-WHISPER / LOCAL PROCESSING</span>
+        <span>文件与结果保存在当前服务器</span>
+      </footer>
+    </main>
+
+    <dialog class="task-dialog" id="taskDialog">
+      <div class="dialog-shell">
+        <header>
+          <div>
+            <p class="eyebrow"><span>DETAIL</span> TRANSCRIPT</p>
+            <h2 id="dialogTitle">任务详情</h2>
+          </div>
+          <button class="dialog-close" id="dialogClose" type="button" aria-label="关闭">
+            ×
+          </button>
+        </header>
+        <div class="dialog-status" id="dialogStatus"></div>
+        <div class="dialog-metadata" id="dialogMetadata"></div>
+        <div class="dialog-actions" id="dialogActions"></div>
+        <section class="transcript-panel">
+          <div class="transcript-head">
+            <h3>转写正文</h3>
+            <button id="copyTranscript" type="button">复制全文</button>
+          </div>
+          <div class="transcript-text" id="transcriptText">
+            <p class="placeholder">任务完成后将在这里显示正文。</p>
+          </div>
+        </section>
+        <section class="segments-panel" id="segmentsPanel" hidden>
+          <div class="segments-head">
+            <h3>时间轴分段</h3>
+            <small id="segmentCount"></small>
+          </div>
+          <div
+            class="segment-list"
+            id="segmentList"
+            tabindex="0"
+            aria-label="时间轴分段列表"
+          ></div>
+        </section>
+      </div>
+    </dialog>
+
+    <div class="toast-region" id="toastRegion" aria-live="assertive"></div>
+  </body>
+</html>

@@ -1,0 +1,4 @@
+# Packaging tools are pinned separately because Python's venv bootstrap differs
+# between the Debian CPU base image and the Ubuntu CUDA base image.
+pip==26.2
+setuptools==83.0.0

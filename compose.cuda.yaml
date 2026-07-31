@@ -1,0 +1,10 @@
+services:
+  whisper-webui:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: faster-whisper-webui:cuda
+    environment:
+      TRANSCRIPTION_DEVICE: cuda
+      TRANSCRIPTION_COMPUTE_TYPE: "${TRANSCRIPTION_COMPUTE_TYPE:-int8_float16}"
+    gpus: all

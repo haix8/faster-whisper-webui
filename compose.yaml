@@ -1,0 +1,39 @@
+services:
+  whisper-webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: faster-whisper-webui:cpu
+    container_name: faster-whisper-webui
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "${WHISPER_PORT:-8000}:8000"
+    environment:
+      TRANSCRIPTION_BACKEND: "${TRANSCRIPTION_BACKEND:-faster-whisper}"
+      TRANSCRIPTION_DEVICE: "${TRANSCRIPTION_DEVICE:-cpu}"
+      TRANSCRIPTION_COMPUTE_TYPE: "${TRANSCRIPTION_COMPUTE_TYPE:-auto}"
+      TRANSCRIPTION_MODELS: "${TRANSCRIPTION_MODELS:-tiny,base,small,medium,large-v3,turbo}"
+      DEFAULT_MODEL: "${DEFAULT_MODEL:-small}"
+      DEFAULT_LANGUAGE: "${DEFAULT_LANGUAGE:-auto}"
+      TRANSCRIPTION_INITIAL_PROMPT_ZH: "${TRANSCRIPTION_INITIAL_PROMPT_ZH:-}"
+      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-2147483648}"
+      MAX_MEDIA_SECONDS: "${MAX_MEDIA_SECONDS:-28800}"
+      MIN_FREE_BYTES: "${MIN_FREE_BYTES:-1073741824}"
+      LOCAL_FILES_ONLY: "${LOCAL_FILES_ONLY:-false}"
+      TZ: "${TZ:-Asia/Shanghai}"
+    volumes:
+      - whisper-data:/data
+      - whisper-models:/models
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  whisper-data:
+  whisper-models:
