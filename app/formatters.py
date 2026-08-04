@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from app.domain import TranscriptionResult
 from app.storage import Storage
+from app.subtitles import wrap_subtitle_text
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def render_srt(result: TranscriptionResult) -> str:
                     str(index),
                     f"{format_timestamp(segment.start, srt=True)} --> "
                     f"{format_timestamp(segment.end, srt=True)}",
-                    segment.text.strip(),
+                    wrap_subtitle_text(segment.text, result.language),
                 ]
             )
         )
@@ -43,7 +44,7 @@ def render_vtt(result: TranscriptionResult) -> str:
                 [
                     f"{format_timestamp(segment.start)} --> "
                     f"{format_timestamp(segment.end)}",
-                    segment.text.strip(),
+                    wrap_subtitle_text(segment.text, result.language),
                 ]
             )
         )

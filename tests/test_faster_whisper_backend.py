@@ -18,6 +18,7 @@ def test_segment_text_join_preserves_language_spacing() -> None:
 
 def test_chinese_punctuation_is_normalized_without_touching_other_languages() -> None:
     assert _normalize_punctuation(" 你好,世界? 好!", "zh") == " 你好，世界？ 好！"
+    assert _normalize_punctuation(" 你好,", "zh") == " 你好，"
     assert _normalize_punctuation(" Hello, world?", "en") == " Hello, world?"
 
 
@@ -65,4 +66,6 @@ def test_chinese_prompt_is_only_used_for_explicit_chinese(tmp_path: Path) -> Non
 
     assert calls[0]["initial_prompt"] == "使用自然、规范的中文标点。"
     assert calls[1]["initial_prompt"] is None
+    assert calls[0]["word_timestamps"] is True
+    assert calls[1]["word_timestamps"] is True
     assert result.text == "你好，世界？"

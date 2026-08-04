@@ -40,3 +40,16 @@ def test_timestamp_rounding_and_formats() -> None:
     payload = json.loads(render_json(result))
     assert payload["schema_version"] == 1
     assert payload["segments"][1]["start"] == 61.2
+
+
+def test_chinese_srt_and_vtt_wrap_long_cues_to_two_lines() -> None:
+    text = f"{'甲' * 13}，{'乙' * 14}"
+    result = sample_result()
+    result.text = text
+    result.segments = [Segment(start=0, end=4, text=text)]
+
+    srt_lines = render_srt(result).splitlines()
+    vtt_lines = render_vtt(result).splitlines()
+
+    assert srt_lines[2:4] == [f"{'甲' * 13}，", "乙" * 14]
+    assert vtt_lines[3:5] == [f"{'甲' * 13}，", "乙" * 14]

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,10 @@ from app.domain import (
     TaskCancelled,
     TranscriptionResult,
     WorkerStopping,
+)
+from app.subtitles import (
+    normalize_punctuation as _normalize_punctuation,
+    split_words_into_segments,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,7 +91,7 @@ class FasterWhisperBackend(TranscriptionBackend):
                 language=requested_language,
                 beam_size=self.settings.beam_size,
                 vad_filter=self.settings.vad_filter,
-                word_timestamps=False,
+                word_timestamps=True,
                 condition_on_previous_text=True,
                 initial_prompt=initial_prompt or None,
             )
@@ -103,16 +106,18 @@ class FasterWhisperBackend(TranscriptionBackend):
                 raw_text = _normalize_punctuation(
                     str(raw_segment.text), detected_language
                 )
-                text = raw_text.strip()
-                segment = Segment(
-                    start=float(raw_segment.start),
-                    end=float(raw_segment.end),
-                    text=text,
+                readable_segments = split_words_into_segments(
+                    _extract_words(raw_segment),
+                    language=detected_language,
+                    fallback_start=float(raw_segment.start),
+                    fallback_end=float(raw_segment.end),
+                    fallback_text=raw_text,
                 )
-                segments.append(segment)
+                segments.extend(readable_segments)
                 if raw_text:
                     text_parts.append(raw_text)
-                on_progress(segment.end, text)
+                for segment in readable_segments:
+                    on_progress(segment.end, segment.text)
         except (TaskCancelled, WorkerStopping):
             raise
         except Exception as error:
@@ -210,18 +215,23 @@ def _join_segment_texts(parts: list[str]) -> str:
     return "".join(parts).strip()
 
 
-def _normalize_punctuation(text: str, language: str | None) -> str:
-    if language != "zh":
-        return text
-    text = re.sub(r"(?<=[\u3400-\u9fff0-9]),(?=[\u3400-\u9fff0-9])", "，", text)
-    text = re.sub(r"(?<=[\u3400-\u9fff0-9]);(?=[\u3400-\u9fff0-9])", "；", text)
-    text = re.sub(r"(?<=[\u3400-\u9fff0-9]):(?=[\u3400-\u9fff0-9])", "：", text)
-    text = re.sub(r"(?<=[\u3400-\u9fff0-9])\?", "？", text)
-    return re.sub(r"(?<=[\u3400-\u9fff0-9])!", "！", text)
-
-
 def _optional_float(value: object) -> float | None:
     try:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _extract_words(raw_segment: object) -> list[dict[str, object]]:
+    words: list[dict[str, object]] = []
+    for raw_word in getattr(raw_segment, "words", None) or []:
+        word: dict[str, object] = {
+            "start": getattr(raw_word, "start", None),
+            "end": getattr(raw_word, "end", None),
+            "word": str(getattr(raw_word, "word", "")),
+        }
+        probability = _optional_float(getattr(raw_word, "probability", None))
+        if probability is not None:
+            word["probability"] = probability
+        words.append(word)
+    return words
