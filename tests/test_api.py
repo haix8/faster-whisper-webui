@@ -8,7 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.domain import MediaInfo
+from app.domain import MediaInfo, MediaValidationError
+from app.douyin import DouyinVideo
 from app.main import create_app
 from tests.conftest import wav_bytes
 
@@ -69,9 +70,9 @@ def test_index_disables_browser_cache(settings: Settings) -> None:
 
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert "/static/styles.css?v=0.1.5" in response.text
-        assert "/static/upload-id.js?v=0.1.5" in response.text
-        assert "/static/app.js?v=0.1.5" in response.text
+        assert "/static/styles.css?v=0.1.6" in response.text
+        assert "/static/upload-id.js?v=0.1.6" in response.text
+        assert "/static/app.js?v=0.1.6" in response.text
 
 
 def test_config_exposes_default_language(settings: Settings) -> None:
@@ -181,6 +182,166 @@ def test_completed_task_survives_app_restart(settings: Settings) -> None:
         restored = restarted.get(f"/api/tasks/{task['id']}")
         assert restored.status_code == 200
         assert restored.json()["status"] == "succeeded"
+
+
+def test_link_task_creation_validation(settings: Settings) -> None:
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "auto",
+            },
+        )
+        assert created.status_code == 201
+        task = created.json()
+        assert task["status"] == "queued"
+        assert task["source_url"] == "https://v.douyin.com/FAV7NYgWNuE"
+        assert task["original_name"] == "抖音视频"
+        assert task["actions"]["cancel"] is True
+        assert task["actions"]["retry"] is False
+        assert task["artifacts"] == {}
+
+        foreign = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://example.com/video/1",
+                "model": "tiny",
+                "language": "auto",
+            },
+        )
+        assert foreign.status_code == 422
+
+        plain_http = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "http://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "auto",
+            },
+        )
+        assert plain_http.status_code == 422
+
+        missing = client.post(
+            "/api/tasks",
+            json={"model": "tiny", "language": "auto"},
+        )
+        assert missing.status_code == 422
+
+        both = client.post(
+            "/api/tasks",
+            json={
+                "file_name": "a.wav",
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "auto",
+            },
+        )
+        assert both.status_code == 422
+
+        share_text = (
+            "复制此链接 https://v.douyin.com/FAV7NYgWNuE/，打开Dou音搜索，"
+            "直接观看视频！"
+        )
+        from_text = client.post(
+            "/api/tasks",
+            json={
+                "source_url": share_text,
+                "model": "tiny",
+                "language": "auto",
+            },
+        )
+        assert from_text.status_code == 201
+        assert from_text.json()["source_url"] == "https://v.douyin.com/FAV7NYgWNuE"
+
+        no_link = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "这是一段没有链接的口令文本",
+                "model": "tiny",
+                "language": "auto",
+            },
+        )
+        assert no_link.status_code == 422
+
+
+def test_link_task_end_to_end(settings: Settings, monkeypatch) -> None:
+    payload = wav_bytes(1.0)
+
+    def fake_resolve(text: str, *, is_cancelled, is_stopping) -> DouyinVideo:
+        del is_cancelled, is_stopping
+        return DouyinVideo(
+            video_id="7664455344306834715",
+            title="端到端测试标题",
+            duration_ms=1000,
+            play_url="https://aweme.snssdk.com/aweme/v1/play/",
+        )
+
+    def fake_download(
+        play_url, destination, *, size_limit, on_progress, is_cancelled, is_stopping
+    ) -> tuple[int, str]:
+        del play_url, size_limit, is_cancelled, is_stopping
+        destination.write_bytes(payload)
+        on_progress(len(payload), len(payload))
+        return len(payload), "ab" * 32
+
+    def fake_probe(path, ffprobe_bin, max_duration) -> MediaInfo:
+        del ffprobe_bin, max_duration
+        return MediaInfo(
+            duration_seconds=1,
+            format_name="wav",
+            audio_codec="pcm_s16le",
+            audio_channels=1,
+            sample_rate=16_000,
+            source_path=path,
+        )
+
+    monkeypatch.setattr("app.worker.resolve_douyin_share", fake_resolve)
+    monkeypatch.setattr("app.worker.download_video", fake_download)
+    monkeypatch.setattr("app.worker.probe_media", fake_probe)
+
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "zh",
+            },
+        ).json()
+        assert created["status"] == "queued"
+        completed = wait_for_status(client, created["id"], {"succeeded"})
+        assert completed["original_name"] == "端到端测试标题"
+        assert completed["size_bytes"] == len(payload)
+        assert completed["sha256"] == "ab" * 32
+        assert completed["source_url"] == "https://v.douyin.com/FAV7NYgWNuE"
+        assert completed["language_detected"] == "zh"
+
+
+def test_link_task_download_failure_can_retry(settings: Settings, monkeypatch) -> None:
+    def failing_resolve(text: str, *, is_cancelled, is_stopping) -> DouyinVideo:
+        del text, is_cancelled, is_stopping
+        raise MediaValidationError("无法解析抖音视频信息")
+
+    monkeypatch.setattr("app.worker.resolve_douyin_share", failing_resolve)
+
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "auto",
+            },
+        ).json()
+        failed = wait_for_status(client, created["id"], {"failed"})
+        assert failed["error_code"] == "INVALID_MEDIA"
+        assert failed["actions"]["retry"] is True
+
+        retried = client.post(f"/api/tasks/{created['id']}/retry")
+        assert retried.status_code == 200
+        assert retried.json()["status"] == "queued"
 
 
 def test_upload_validation_errors(settings: Settings) -> None:

@@ -5,7 +5,7 @@
 交付一个可直接部署的转写服务：
 
 - 一个 Docker 容器提供 WebUI、HTTP API、任务调度和转写 Worker；
-- 内网用户上传音频或视频后立即得到异步任务；
+- 内网用户上传音频或视频，或粘贴抖音分享链接，立即得到异步任务；
 - 用户可以选择允许的 Whisper 模型和语言；
 - 任务列表展示排队、处理阶段、近似进度、耗时、错误和结果；
 - 结果可预览并下载 JSON、TXT、SRT、VTT；
@@ -24,13 +24,14 @@
 | 队列 | SQLite 任务表是唯一真相源，单 Worker 原子领取 |
 | 推理 | faster-whisper 1.2.1 |
 | 媒体 | ffprobe 校验，ffmpeg 统一为 16kHz 单声道 WAV |
+| 链接下载 | 仅抖音分享链接（`app/douyin.py`）：短链重定向解析 → 分享页取无水印播放地址 → 流式下载；域名白名单、HTTPS、非私网 IP 校验 |
 | 进度 | 浏览器上传进度 + Worker 阶段进度 + 转写时间轴估算 |
 | 更新 | 活跃任务每 2 秒轮询，空闲时降低频率 |
 | 部署 | CPU 与 CUDA 使用不同镜像目标，但每次部署均只有一个容器 |
 | 持久化 | `/data` 保存 SQLite、源文件和结果，`/models` 保存模型缓存 |
 
-第一版不引入 PostgreSQL、Redis、Celery、WebSocket、Nginx、用户系统、
-外部 URL 下载、说话人分离、翻译或摘要。
+不引入 PostgreSQL、Redis、Celery、WebSocket、Nginx、用户系统、
+说话人分离、翻译或摘要。外部 URL 下载仅限抖音分享链接，不扩展其他平台。
 
 ## 3. 硬件与加速边界
 
@@ -66,12 +67,18 @@ queued/succeeded/failed/cancelled -> deleting -> deleted
                                       +-> delete_failed -> deleting（重试）
 ```
 
+链接任务（`source_url` 非空）创建后直接入队，没有 `uploading` 阶段；下载是
+`running` 下的 `downloading` 阶段（`running` 合法阶段序列：
+`downloading -> preprocessing -> transcribing -> writing_results -> complete`），
+下载完成后 `source_path` 与媒体元数据写入任务记录，之后走与上传任务相同的链路。
+
 Worker 使用 SQLite `BEGIN IMMEDIATE` 事务领取最早的 `queued` 任务。
 
 重启恢复规则：
 
 - `uploading`：标记为失败，删除未完成临时上传；
-- `running`：低于最大尝试次数时重新排队，否则标记失败；
+- `running`（含下载中断）：低于最大尝试次数时重新排队，否则标记失败；未完成
+  下载的 `.download` 临时文件在启动时清理，重试即重新下载；
 - `running/queued + cancel_requested`：直接完成取消，不重新入队；
 - `deleting`：转为可见的 `delete_failed`，允许再次删除；
 - `queued`：保持排队；
@@ -87,7 +94,7 @@ GPU 默认只允许一个运行任务，避免多模型并发占满显存。
 /data/
 ├── db/app.sqlite3
 └── tasks/<uuid>/
-    ├── source.<ext>
+    ├── source.<ext>        # 上传文件或抖音下载的视频（链接任务为 source.mp4）
     ├── work/audio.wav
     └── results/
         ├── transcript.json
@@ -127,7 +134,7 @@ JSON 是权威结果，TXT、SRT、VTT 从同一份标准化分段结果生成�
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `GET` | `/api/config` | 模型、语言和上传限制 |
-| `POST` | `/api/tasks` | 创建上传任务 |
+| `POST` | `/api/tasks` | 创建任务：`file_name`（上传）或 `source_url`（抖音链接，二选一） |
 | `PUT` | `/api/tasks/{id}/source` | 流式上传原始文件并入队 |
 | `GET` | `/api/tasks` | 分页、筛选、搜索任务 |
 | `GET` | `/api/tasks/{id}` | 任务详情和结果预览 |
@@ -143,7 +150,7 @@ JSON 是权威结果，TXT、SRT、VTT 从同一份标准化分段结果生成�
 
 页面包含：
 
-- 拖拽或选择多个音视频文件；
+- 拖拽或选择多个音视频文件，或切换「粘贴链接」粘贴抖音分享链接/口令；
 - 模型、语言选择；
 - 每个文件独立上传并显示上传进度；
 - 系统状态卡：Worker、设备、当前模型、排队数量；
@@ -186,6 +193,8 @@ CPU 自动使用 `int8`；CUDA 自动使用 `int8_float16`。
 - 创建、上传、列表、详情、取消、重试、删除 API；
 - 文件删除失败后保持可见并可重试；
 - Worker 使用测试后端完成端到端任务；
+- 链接任务：`source_url` 校验（白名单/HTTPS）、创建直接入队、下载失败可重试、
+  下载阶段取消、下载文件原子落盘；
 - 健康检查和系统状态。
 
 OrbStack 验收：

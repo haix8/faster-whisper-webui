@@ -27,6 +27,11 @@ const elements = {
   dropZone: document.querySelector("#dropZone"),
   chooseButton: document.querySelector("#chooseButton"),
   fileInput: document.querySelector("#fileInput"),
+  tabUpload: document.querySelector("#tabUpload"),
+  tabLink: document.querySelector("#tabLink"),
+  linkBox: document.querySelector("#linkBox"),
+  linkInput: document.querySelector("#linkInput"),
+  createLinkTask: document.querySelector("#createLinkTask"),
   modelSelect: document.querySelector("#modelSelect"),
   languageSelect: document.querySelector("#languageSelect"),
   modelHint: document.querySelector("#modelHint"),
@@ -71,6 +76,7 @@ const STAGE_LABELS = {
   receiving_upload: "接收文件",
   queue: "等待 Worker",
   starting: "启动任务",
+  downloading: "下载视频",
   preprocessing: "提取音轨",
   transcribing: "语音转写",
   writing_results: "生成结果",
@@ -130,6 +136,9 @@ function bindEvents() {
   });
 
   elements.modelSelect.addEventListener("change", updateModelHint);
+  elements.tabUpload.addEventListener("click", () => switchSourceMode("upload"));
+  elements.tabLink.addEventListener("click", () => switchSourceMode("link"));
+  elements.createLinkTask.addEventListener("click", createLinkTaskFlow);
   elements.statusFilters.addEventListener("click", (event) => {
     const button = event.target.closest("button[data-status]");
     if (!button) return;
@@ -283,7 +292,7 @@ function renderTasks() {
       <div class="empty-state">
         <div>
           <strong>${state.query || state.status ? "没有匹配的任务" : "还没有转写记录"}</strong>
-          <p>${state.query || state.status ? "更换筛选条件后再试。" : "从上方上传一段音频或视频开始。"}</p>
+          <p>${state.query || state.status ? "更换筛选条件后再试。" : "从上方上传文件或粘贴抖音分享链接开始。"}</p>
         </div>
       </div>`;
     return;
@@ -344,6 +353,82 @@ function renderTaskRow(task) {
       </div>
       <div class="task-actions">${actionButtons.join("")}</div>
     </article>`;
+}
+
+function switchSourceMode(mode) {
+  const uploadActive = mode === "upload";
+  elements.dropZone.hidden = !uploadActive;
+  elements.linkBox.hidden = uploadActive;
+  elements.tabUpload.classList.toggle("active", uploadActive);
+  elements.tabLink.classList.toggle("active", !uploadActive);
+  elements.tabUpload.setAttribute("aria-selected", String(uploadActive));
+  elements.tabLink.setAttribute("aria-selected", String(!uploadActive));
+  if (!uploadActive) elements.linkInput.focus();
+}
+
+async function createLinkTaskFlow() {
+  if (!state.config) {
+    toast("服务配置尚未载入", true);
+    return;
+  }
+  const text = elements.linkInput.value.trim();
+  if (!text) {
+    toast("请先粘贴抖音分享链接或口令", true);
+    return;
+  }
+  const url = extractLinkUrl(text);
+  if (!url) {
+    toast("未在文本中找到链接，请粘贴完整的抖音分享链接", true);
+    return;
+  }
+  const localId = window.WhisperUploadId.create();
+  state.uploads.set(localId, {
+    id: localId,
+    fileName: "抖音链接任务",
+    size: 0,
+    progress: 0,
+    status: "preparing",
+    message: "正在创建任务",
+  });
+  renderUploads();
+  try {
+    const task = await api("/api/tasks", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Idempotency-Key": localId,
+      },
+      body: JSON.stringify({
+        source_url: url,
+        model: elements.modelSelect.value,
+        language: elements.languageSelect.value,
+      }),
+    });
+    updateUpload(localId, {
+      taskId: task.id,
+      status: "done",
+      progress: 100,
+      message: "已入队，等待下载",
+    });
+    elements.linkInput.value = "";
+    window.setTimeout(() => {
+      state.uploads.delete(localId);
+      renderUploads();
+    }, 5000);
+    toast("链接任务已创建");
+    await refreshAll();
+  } catch (error) {
+    updateUpload(localId, {
+      status: "failed",
+      message: readError(error),
+    });
+    toast(`链接任务创建失败：${readError(error)}`, true);
+  }
+}
+
+function extractLinkUrl(text) {
+  const match = text.match(/https?:\/\/[^\s　，,；;：:！!？?、()（）]+/);
+  return match ? match[0].replace(/\/+$/, "") : null;
 }
 
 async function handleFiles(files) {
@@ -526,7 +611,7 @@ async function openDetail(taskId, show = true) {
     </div>
     <div class="task-progress"><i style="width:${Number(task.progress || 0)}%"></i></div>
     <span class="progress-message">${escapeHtml(task.error_message || task.message || "")}</span>`;
-  elements.dialogMetadata.innerHTML = [
+  const metadataRows = [
     ["模型", task.model_name],
     ["语言", task.language_detected || task.language_requested || "自动"],
     ["设备", task.device || "待分配"],
@@ -535,7 +620,11 @@ async function openDetail(taskId, show = true) {
     ["文件大小", formatBytes(task.size_bytes || task.expected_size_bytes || 0)],
     ["创建时间", formatDate(task.created_at)],
     ["处理耗时", formatDuration(taskElapsed(task))],
-  ]
+  ];
+  if (task.source_url) {
+    metadataRows.push(["来源链接", task.source_url]);
+  }
+  elements.dialogMetadata.innerHTML = metadataRows
     .map(
       ([label, value]) => `
         <div class="meta-item">

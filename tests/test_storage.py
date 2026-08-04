@@ -45,3 +45,36 @@ def test_cleanup_stale_uploads_only_removes_uuid_task_uploads(tmp_path: Path) ->
     assert storage.cleanup_stale_uploads() == 1
     assert not upload.exists()
     assert unrelated.exists()
+
+
+def test_download_temp_path_and_cleanup(tmp_path: Path) -> None:
+    storage = Storage(tmp_path / "data", tmp_path / "models")
+    storage.initialize()
+    task_id = str(uuid4())
+    download = storage.download_temp_path(task_id, str(uuid4()))
+    assert download.parent.name == task_id
+    assert download.name.startswith("source.")
+    assert download.name.endswith(".download")
+    download.write_bytes(b"partial")
+
+    assert storage.cleanup_stale_downloads() == 1
+    assert not download.exists()
+
+
+def test_cleanup_stale_downloads_only_removes_uuid_task_files(
+    tmp_path: Path,
+) -> None:
+    storage = Storage(tmp_path / "data", tmp_path / "models")
+    storage.initialize()
+    task_id = str(uuid4())
+    download = storage.download_temp_path(task_id, str(uuid4()))
+    download.write_bytes(b"partial")
+    unrelated = storage.tasks_dir / "not-a-task" / "source.abc.download"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"keep")
+    storage.cleanup_download(task_id, str(uuid4()))
+
+    assert download.exists()
+    assert storage.cleanup_stale_downloads() == 1
+    assert not download.exists()
+    assert unrelated.exists()

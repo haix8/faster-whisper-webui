@@ -23,6 +23,7 @@ class TaskStage(StrEnum):
     RECEIVING_UPLOAD = "receiving_upload"
     QUEUE = "queue"
     STARTING = "starting"
+    DOWNLOADING = "downloading"
     PREPROCESSING = "preprocessing"
     TRANSCRIBING = "transcribing"
     WRITING_RESULTS = "writing_results"

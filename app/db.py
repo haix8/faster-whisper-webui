@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 2,
     source_path TEXT,
+    source_url TEXT,
     error_code TEXT,
     error_message TEXT,
     worker_id TEXT,
@@ -75,6 +76,18 @@ class Database:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
             connection.executescript(SCHEMA)
+            self._upgrade_schema(connection)
+
+    @staticmethod
+    def _upgrade_schema(connection: sqlite3.Connection) -> None:
+        # 历史数据库没有独立迁移框架：CREATE TABLE IF NOT EXISTS 不会为已存在的
+        # 表补列，这里按列名显式补齐，保证旧库升级后字段契约一致。
+        existing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "source_url" not in existing_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN source_url TEXT")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -109,6 +122,7 @@ class Database:
         model_name: str,
         max_attempts: int,
         idempotency_key: str | None,
+        source_url: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         now = utc_now()
         task_id = str(uuid4())
@@ -127,14 +141,30 @@ class Database:
                         connection.commit()
                         return self._row_to_dict(existing), False
 
+                if source_url:
+                    # 链接任务没有上传阶段：创建即入队，由 Worker 负责下载。
+                    status, stage, message, queued_at = (
+                        TaskStatus.QUEUED,
+                        TaskStage.QUEUE,
+                        "等待处理",
+                        now,
+                    )
+                else:
+                    status, stage, message, queued_at = (
+                        TaskStatus.UPLOADING,
+                        TaskStage.UPLOAD,
+                        "等待上传",
+                        None,
+                    )
                 connection.execute(
                     """
                     INSERT INTO tasks (
                         id, idempotency_key, original_name, source_extension,
                         content_type, expected_size_bytes, language_requested,
                         model_name, status, stage, progress, message,
-                        max_attempts, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                        max_attempts, source_url, created_at, updated_at,
+                        queued_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -145,12 +175,14 @@ class Database:
                         expected_size_bytes,
                         language_requested,
                         model_name,
-                        TaskStatus.UPLOADING,
-                        TaskStage.UPLOAD,
-                        "等待上传",
+                        status,
+                        stage,
+                        message,
                         max_attempts,
+                        source_url,
                         now,
                         now,
+                        queued_at,
                     ),
                 )
                 row = connection.execute(
@@ -251,6 +283,48 @@ class Database:
             )
             if cursor.rowcount != 1:
                 raise ValueError("task is not accepting an upload")
+        return self.require_task(task_id)
+
+    def finish_download(
+        self,
+        task_id: str,
+        *,
+        size_bytes: int,
+        sha256: str,
+        duration_seconds: float,
+        media_format: str,
+        audio_codec: str,
+        source_path: str,
+        original_name: str | None = None,
+    ) -> dict[str, Any]:
+        """记录链接任务下载完成后的源文件元数据，任务仍保持 running。"""
+        now = utc_now()
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET size_bytes = ?, sha256 = ?, duration_seconds = ?,
+                    media_format = ?, audio_codec = ?, source_path = ?,
+                    original_name = COALESCE(?, original_name),
+                    updated_at = ?, version = version + 1
+                WHERE id = ? AND status = ? AND stage = ?
+                """,
+                (
+                    size_bytes,
+                    sha256,
+                    duration_seconds,
+                    media_format,
+                    audio_codec,
+                    source_path,
+                    original_name,
+                    now,
+                    task_id,
+                    TaskStatus.RUNNING,
+                    TaskStage.DOWNLOADING,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("task is not downloading a source")
         return self.require_task(task_id)
 
     def begin_upload(self, task_id: str) -> bool:

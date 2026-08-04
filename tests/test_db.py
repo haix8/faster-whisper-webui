@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from app.db import Database
-from app.domain import TaskStatus
+from app.domain import TaskStage, TaskStatus
 
 
 def create_queued_task(database: Database, index: int) -> str:
@@ -127,6 +127,115 @@ def test_recovery_exposes_interrupted_delete_for_retry(tmp_path: Path) -> None:
     database.begin_delete(task_id)
     database.finish_delete(task_id)
     assert database.get_task(task_id) is None
+
+
+def test_link_task_is_created_directly_queued(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    task, created = database.create_task(
+        original_name="抖音视频",
+        source_extension=".mp4",
+        content_type=None,
+        expected_size_bytes=None,
+        language_requested="auto",
+        model_name="tiny",
+        max_attempts=2,
+        idempotency_key="link-key",
+        source_url="https://v.douyin.com/FAV7NYgWNuE/",
+    )
+
+    assert created is True
+    assert task["status"] == TaskStatus.QUEUED
+    assert task["stage"] == TaskStage.QUEUE
+    assert task["queued_at"] is not None
+    assert task["source_url"] == "https://v.douyin.com/FAV7NYgWNuE/"
+
+
+def test_finish_download_records_source_metadata(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    task, _ = database.create_task(
+        original_name="抖音视频",
+        source_extension=".mp4",
+        content_type=None,
+        expected_size_bytes=None,
+        language_requested="auto",
+        model_name="tiny",
+        max_attempts=2,
+        idempotency_key="link-key-2",
+        source_url="https://v.douyin.com/FAV7NYgWNuE/",
+    )
+    claimed = database.claim_next_task("worker")
+    assert claimed is not None
+    database.update_progress(
+        claimed["id"],
+        stage=TaskStage.DOWNLOADING,
+        progress=1,
+        message="正在下载",
+    )
+
+    updated = database.finish_download(
+        claimed["id"],
+        size_bytes=1234,
+        sha256="ab" * 32,
+        duration_seconds=1.5,
+        media_format="mov,mp4",
+        audio_codec="aac",
+        source_path=f"tasks/{claimed['id']}/source.mp4",
+        original_name="下载完成后的标题",
+    )
+
+    assert updated["status"] == TaskStatus.RUNNING
+    assert updated["size_bytes"] == 1234
+    assert updated["sha256"] == "ab" * 32
+    assert updated["original_name"] == "下载完成后的标题"
+    assert updated["source_path"] == f"tasks/{claimed['id']}/source.mp4"
+
+
+def test_finish_download_keeps_original_name_when_absent(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    task, _ = database.create_task(
+        original_name="抖音视频",
+        source_extension=".mp4",
+        content_type=None,
+        expected_size_bytes=None,
+        language_requested="auto",
+        model_name="tiny",
+        max_attempts=2,
+        idempotency_key="link-key-3",
+        source_url="https://v.douyin.com/FAV7NYgWNuE/",
+    )
+    claimed = database.claim_next_task("worker")
+    assert claimed is not None
+    database.update_progress(
+        claimed["id"], stage=TaskStage.DOWNLOADING, progress=1, message="正在下载"
+    )
+    updated = database.finish_download(
+        claimed["id"],
+        size_bytes=1,
+        sha256="0" * 64,
+        duration_seconds=1.0,
+        media_format="mp4",
+        audio_codec="aac",
+        source_path=f"tasks/{claimed['id']}/source.mp4",
+    )
+    assert updated["original_name"] == "抖音视频"
+
+
+def test_legacy_database_gains_source_url_column(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("ALTER TABLE tasks DROP COLUMN source_url")
+
+    database.initialize()
+
+    with database.connect() as connection:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+    assert "source_url" in columns
 
 
 def test_queued_cancel_and_manual_retry(tmp_path: Path) -> None:

@@ -9,9 +9,9 @@
     />
     <title>声迹 · 转写工作台</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=0.1.5" />
-    <script src="/static/upload-id.js?v=0.1.5" defer></script>
-    <script src="/static/app.js?v=0.1.5" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=0.1.6" />
+    <script src="/static/upload-id.js?v=0.1.6" defer></script>
+    <script src="/static/app.js?v=0.1.6" defer></script>
   </head>
   <body>
     <div class="ambient-grid" aria-hidden="true"></div>
@@ -79,37 +79,76 @@
           <b>+</b>
         </div>
         <div class="upload-layout">
-          <div
-            class="drop-zone"
-            id="dropZone"
-            tabindex="0"
-            role="button"
-            aria-labelledby="uploadTitle uploadHint"
-          >
-            <input
-              id="fileInput"
-              type="file"
-              multiple
-              hidden
-              accept=".mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.aiff,.mp4,.mov,.mkv,.avi,.webm,.wmv,.m4v,.mpeg,.mpg"
-            />
-            <div class="drop-icon" aria-hidden="true">
-              <span></span>
-              <i></i>
+          <div class="source-main">
+            <div class="source-tabs" role="tablist" aria-label="任务来源">
+              <button
+                class="active"
+                id="tabUpload"
+                type="button"
+                role="tab"
+                aria-selected="true"
+              >
+                上传文件
+              </button>
+              <button
+                id="tabLink"
+                type="button"
+                role="tab"
+                aria-selected="false"
+              >
+                粘贴链接
+              </button>
             </div>
-            <div>
-              <h2 id="uploadTitle">拖入音频或视频</h2>
-              <p id="uploadHint">也可以点击选择多个文件</p>
+            <div
+              class="drop-zone"
+              id="dropZone"
+              tabindex="0"
+              role="button"
+              aria-labelledby="uploadTitle uploadHint"
+            >
+              <input
+                id="fileInput"
+                type="file"
+                multiple
+                hidden
+                accept=".mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.aiff,.mp4,.mov,.mkv,.avi,.webm,.wmv,.m4v,.mpeg,.mpg"
+              />
+              <div class="drop-icon" aria-hidden="true">
+                <span></span>
+                <i></i>
+              </div>
+              <div>
+                <h2 id="uploadTitle">拖入音频或视频</h2>
+                <p id="uploadHint">也可以点击选择多个文件</p>
+              </div>
+              <button class="choose-button" id="chooseButton" type="button">
+                选择文件 <span>↗</span>
+              </button>
             </div>
-            <button class="choose-button" id="chooseButton" type="button">
-              选择文件 <span>↗</span>
-            </button>
+            <div class="link-box" id="linkBox" hidden>
+              <label class="field" for="linkInput">
+                <span>抖音分享链接</span>
+                <textarea
+                  id="linkInput"
+                  rows="4"
+                  placeholder="粘贴抖音分享链接或整段口令文本，例如 https://v.douyin.com/xxxxx/"
+                ></textarea>
+                <small
+                  >支持 v.douyin.com 短链、完整链接与整段分享口令；视频在服务器端下载。</small
+                >
+              </label>
+              <div class="link-box-actions">
+                <button class="choose-button" id="createLinkTask" type="button">
+                  创建转写任务 <span>↗</span>
+                </button>
+              </div>
+            </div>
           </div>
 
           <div class="session-settings">
             <div class="settings-title">
               <span>本批任务设置</span>
-              <small>上传时固定到每个任务</small>
+              <small>创建时固定到每个任务</small>
             </div>
             <label class="field">
               <span>转写模型</span>

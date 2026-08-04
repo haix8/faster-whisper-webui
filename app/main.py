@@ -28,6 +28,7 @@ from app.backends.base import TranscriptionBackend
 from app.config import Settings
 from app.db import Database
 from app.domain import MediaValidationError, TaskStatus
+from app.douyin import extract_share_url, validate_source_url
 from app.media import probe_media
 from app.schemas import TaskCreate
 from app.storage import ARTIFACT_FILES, Storage
@@ -185,20 +186,39 @@ def create_app(
             raise HTTPException(413, "文件超过上传大小限制")
         if runtime.storage.free_bytes() < resolved_settings.min_free_bytes:
             raise HTTPException(507, "服务器可用磁盘空间不足")
-        try:
-            extension = runtime.storage.source_extension(payload.file_name)
-        except ValueError as error:
-            raise HTTPException(422, str(error)) from error
+        if payload.source_url:
+            # 与 Worker 一致：先提取口令文本中的链接，再校验域名白名单。
+            share_url = extract_share_url(payload.source_url) or (
+                payload.source_url if payload.source_url.startswith("http") else None
+            )
+            if not share_url:
+                raise HTTPException(422, "未找到抖音分享链接")
+            try:
+                validate_source_url(share_url)
+            except MediaValidationError as error:
+                raise HTTPException(422, str(error)) from error
+            payload.source_url = share_url
+            original_name = "抖音视频"
+            extension = ".mp4"
+            expected_size = None
+        else:
+            original_name = str(payload.file_name)
+            try:
+                extension = runtime.storage.source_extension(original_name)
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from error
+            expected_size = payload.size_bytes
 
         task, created = runtime.database.create_task(
-            original_name=payload.file_name,
+            original_name=original_name,
             source_extension=extension,
             content_type=payload.content_type,
-            expected_size_bytes=payload.size_bytes,
+            expected_size_bytes=expected_size,
             language_requested=payload.language,
             model_name=payload.model,
             max_attempts=resolved_settings.max_task_attempts,
             idempotency_key=idempotency_key,
+            source_url=payload.source_url,
         )
         if created:
             runtime.storage.create_task_dir(task["id"])
@@ -379,10 +399,10 @@ def create_app(
         if not task:
             raise HTTPException(404, "任务不存在")
         source_path = task.get("source_path")
-        if (
-            not source_path
-            or not runtime.storage.resolve_relative(str(source_path)).is_file()
-        ):
+        has_source = bool(task.get("source_url")) or (
+            source_path and runtime.storage.resolve_relative(str(source_path)).is_file()
+        )
+        if not has_source:
             raise HTTPException(409, "源文件不存在，无法重试")
         try:
             updated = runtime.database.retry_task(canonical_id)
@@ -474,7 +494,7 @@ def serialize_task(
         "cancel": status_value
         in {TaskStatus.UPLOADING, TaskStatus.QUEUED, TaskStatus.RUNNING},
         "retry": status_value in {TaskStatus.FAILED, TaskStatus.CANCELLED}
-        and bool(result.get("source_path")),
+        and (bool(result.get("source_url")) or bool(result.get("source_path"))),
         "delete": status_value
         in {
             TaskStatus.QUEUED,
@@ -524,6 +544,7 @@ def _same_create_request(task: dict[str, Any], payload: TaskCreate) -> bool:
         and task["expected_size_bytes"] == payload.size_bytes
         and task["model_name"] == payload.model
         and task["language_requested"] == payload.language
+        and task["source_url"] == payload.source_url
     )
 
 

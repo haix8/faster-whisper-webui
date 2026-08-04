@@ -422,6 +422,89 @@ select:focus-visible,
   box-shadow: var(--shadow);
 }
 
+.source-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.source-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-deep);
+}
+
+.source-tabs button {
+  padding: 7px 16px;
+  color: var(--ink-soft);
+  font: 500 12px var(--body);
+  letter-spacing: 0.08em;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 0.2s ease,
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.source-tabs button:hover {
+  color: var(--ink);
+}
+
+.source-tabs button.active {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--paper-bright);
+}
+
+.link-box {
+  display: grid;
+  gap: 18px;
+  align-content: center;
+  min-height: 250px;
+  padding: 36px;
+  background:
+    linear-gradient(135deg, transparent 50%, rgba(239, 75, 35, 0.045) 50%),
+    var(--paper-bright);
+}
+
+.link-box textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 14px;
+  color: var(--ink);
+  font: 400 14px/1.6 var(--mono);
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--paper-deep);
+  transition: border-color 0.2s ease;
+}
+
+.link-box textarea:focus {
+  outline: 0;
+  border-color: var(--signal);
+}
+
+.link-box-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.link-box-actions .choose-button {
+  align-self: auto;
+}
+
+.link-box-actions small {
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .drop-zone {
   position: relative;
   display: grid;

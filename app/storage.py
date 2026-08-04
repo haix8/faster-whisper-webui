@@ -123,6 +123,17 @@ class Storage:
         if upload.exists():
             upload.unlink()
 
+    def download_temp_path(self, task_id: str, download_id: str) -> Path:
+        canonical_download_id = UUID(download_id).hex
+        return (
+            self.create_task_dir(task_id) / f"source.{canonical_download_id}.download"
+        )
+
+    def cleanup_download(self, task_id: str, download_id: str) -> None:
+        download = self.download_temp_path(task_id, download_id)
+        if download.exists():
+            download.unlink()
+
     def cleanup_stale_uploads(self) -> int:
         removed = 0
         candidates = [
@@ -137,6 +148,20 @@ class Storage:
             if upload.parent != task_dir:
                 continue
             upload.unlink(missing_ok=True)
+            removed += 1
+        return removed
+
+    def cleanup_stale_downloads(self) -> int:
+        removed = 0
+        candidates = [*self.tasks_dir.glob("*/source.*.download")]
+        for download in candidates:
+            try:
+                task_dir = self.task_dir(download.parent.name)
+            except ValueError:
+                continue
+            if download.parent != task_dir:
+                continue
+            download.unlink(missing_ok=True)
             removed += 1
         return removed
 

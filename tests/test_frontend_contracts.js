@@ -82,8 +82,23 @@ test("long timelines use a bounded, independently scrollable region", () => {
   );
 });
 
-test("index loads the coordinated 0.1.5 static asset revision", () => {
-  assert.match(htmlSource, /styles\.css\?v=0\.1\.5/);
-  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.5/);
-  assert.match(htmlSource, /app\.js\?v=0\.1\.5/);
+test("index loads the coordinated 0.1.6 static asset revision", () => {
+  assert.match(htmlSource, /styles\.css\?v=0\.1\.6/);
+  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.6/);
+  assert.match(htmlSource, /app\.js\?v=0\.1\.6/);
+});
+
+test("link source mode creates a douyin task without a file", () => {
+  assert.match(htmlSource, /id="tabUpload"/);
+  assert.match(htmlSource, /id="tabLink"/);
+  assert.match(htmlSource, /id="linkInput"/);
+  assert.match(htmlSource, /id="createLinkTask"/);
+  assert.match(appSource, /function switchSourceMode\(mode\)/);
+  assert.match(appSource, /function createLinkTaskFlow\(\)/);
+  assert.match(appSource, /function extractLinkUrl\(text\)/);
+  assert.match(
+    appSource,
+    /JSON\.stringify\(\{\s*source_url: url,\s*model: elements\.modelSelect\.value/,
+  );
+  assert.match(appSource, /downloading: "下载视频"/);
 });

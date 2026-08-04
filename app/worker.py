@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from app.backends.base import TranscriptionBackend
@@ -15,8 +16,9 @@ from app.domain import (
     TaskStage,
     WorkerStopping,
 )
+from app.douyin import download_video, resolve_douyin_share
 from app.formatters import publish_artifacts
-from app.media import normalize_audio
+from app.media import normalize_audio, probe_media
 from app.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,7 @@ class TranscriptionWorker:
     def start(self) -> dict[str, int]:
         recovery = self.database.recover_incomplete()
         recovery["stale_uploads_removed"] = self.storage.cleanup_stale_uploads()
+        recovery["stale_downloads_removed"] = self.storage.cleanup_stale_downloads()
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run,
@@ -160,9 +163,15 @@ class TranscriptionWorker:
         try:
             self._raise_if_interrupted(task_id)
             source_path_value = task.get("source_path")
-            if not source_path_value:
-                raise RuntimeError("任务缺少源文件路径")
-            source_path = self.storage.resolve_relative(str(source_path_value))
+            if source_path_value:
+                source_path = self.storage.resolve_relative(str(source_path_value))
+            else:
+                source_path = self.storage.source_path(
+                    task_id, str(task["source_extension"])
+                )
+            source_url = task.get("source_url")
+            if source_url and not source_path.is_file():
+                self._download_source(task_id, str(source_url), source_path)
             if not source_path.is_file():
                 raise RuntimeError("任务源文件不存在")
 
@@ -278,6 +287,77 @@ class TranscriptionWorker:
                 detail=runtime.detail,
                 last_seen_at=time.time(),
             )
+
+    def _download_source(
+        self, task_id: str, source_url: str, destination: Path
+    ) -> None:
+        self.database.update_progress(
+            task_id,
+            stage=TaskStage.DOWNLOADING,
+            progress=1,
+            message="正在解析抖音链接",
+        )
+        video = resolve_douyin_share(
+            source_url,
+            is_cancelled=lambda: self.database.is_cancel_requested(task_id),
+            is_stopping=self._stop_event.is_set,
+        )
+        title = video.title[:36] if video.title else "视频"
+        self.database.update_progress(
+            task_id,
+            stage=TaskStage.DOWNLOADING,
+            progress=2,
+            message=f"正在下载：{title}",
+        )
+        last_download_progress_at = 0.0
+
+        def on_download_progress(size: int, total: int | None) -> None:
+            nonlocal last_download_progress_at
+            now = time.monotonic()
+            if now - last_download_progress_at < 0.5:
+                return
+            last_download_progress_at = now
+            if total:
+                progress = 2 + min(1.0, size / total) * 7
+                message = (
+                    f"已下载 {size / (1024 * 1024):.1f} "
+                    f"/ {total / (1024 * 1024):.1f} MB"
+                )
+            else:
+                progress = 5
+                message = f"已下载 {size / (1024 * 1024):.1f} MB"
+            self.database.update_progress(
+                task_id,
+                stage=TaskStage.DOWNLOADING,
+                progress=progress,
+                message=message,
+            )
+            self._set_snapshot(last_seen_at=time.time())
+
+        size_bytes, sha256 = download_video(
+            video.play_url,
+            destination,
+            size_limit=self.settings.max_upload_bytes,
+            on_progress=on_download_progress,
+            is_cancelled=lambda: self.database.is_cancel_requested(task_id),
+            is_stopping=self._stop_event.is_set,
+        )
+        media = probe_media(
+            destination,
+            self.settings.ffprobe_bin,
+            self.settings.max_media_seconds,
+        )
+        self.database.finish_download(
+            task_id,
+            size_bytes=size_bytes,
+            sha256=sha256,
+            duration_seconds=media.duration_seconds,
+            media_format=media.format_name,
+            audio_codec=media.audio_codec,
+            source_path=self.storage.relative_path(destination),
+            original_name=video.title[:255] if video.title else None,
+        )
+        self._raise_if_interrupted(task_id)
 
     def _raise_if_interrupted(self, task_id: str) -> None:
         if self.database.is_cancel_requested(task_id):
