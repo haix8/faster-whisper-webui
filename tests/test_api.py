@@ -70,9 +70,9 @@ def test_index_disables_browser_cache(settings: Settings) -> None:
 
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert "/static/styles.css?v=0.1.6" in response.text
-        assert "/static/upload-id.js?v=0.1.6" in response.text
-        assert "/static/app.js?v=0.1.6" in response.text
+        assert "/static/styles.css?v=0.1.11" in response.text
+        assert "/static/upload-id.js?v=0.1.11" in response.text
+        assert "/static/app.js?v=0.1.11" in response.text
 
 
 def test_config_exposes_default_language(settings: Settings) -> None:
@@ -269,8 +269,10 @@ def test_link_task_creation_validation(settings: Settings) -> None:
 def test_link_task_end_to_end(settings: Settings, monkeypatch) -> None:
     payload = wav_bytes(1.0)
 
-    def fake_resolve(text: str, *, is_cancelled, is_stopping) -> DouyinVideo:
-        del is_cancelled, is_stopping
+    def fake_resolve(
+        text: str, *, is_cancelled, is_stopping, cookie=None
+    ) -> DouyinVideo:
+        del is_cancelled, is_stopping, cookie
         return DouyinVideo(
             video_id="7664455344306834715",
             title="端到端测试标题",
@@ -279,9 +281,16 @@ def test_link_task_end_to_end(settings: Settings, monkeypatch) -> None:
         )
 
     def fake_download(
-        play_url, destination, *, size_limit, on_progress, is_cancelled, is_stopping
+        play_url,
+        destination,
+        *,
+        size_limit,
+        on_progress,
+        is_cancelled,
+        is_stopping,
+        cookie=None,
     ) -> tuple[int, str]:
-        del play_url, size_limit, is_cancelled, is_stopping
+        del play_url, size_limit, is_cancelled, is_stopping, cookie
         destination.write_bytes(payload)
         on_progress(len(payload), len(payload))
         return len(payload), "ab" * 32
@@ -320,8 +329,10 @@ def test_link_task_end_to_end(settings: Settings, monkeypatch) -> None:
 
 
 def test_link_task_download_failure_can_retry(settings: Settings, monkeypatch) -> None:
-    def failing_resolve(text: str, *, is_cancelled, is_stopping) -> DouyinVideo:
-        del text, is_cancelled, is_stopping
+    def failing_resolve(
+        text: str, *, is_cancelled, is_stopping, cookie=None
+    ) -> DouyinVideo:
+        del text, is_cancelled, is_stopping, cookie
         raise MediaValidationError("无法解析抖音视频信息")
 
     monkeypatch.setattr("app.worker.resolve_douyin_share", failing_resolve)
@@ -342,6 +353,175 @@ def test_link_task_download_failure_can_retry(settings: Settings, monkeypatch) -
         retried = client.post(f"/api/tasks/{created['id']}/retry")
         assert retried.status_code == 200
         assert retried.json()["status"] == "queued"
+
+
+def test_link_task_download_failure_auto_requeues_then_fails(
+    settings: Settings, monkeypatch
+) -> None:
+    calls = {"count": 0}
+
+    def failing_resolve(
+        text: str, *, is_cancelled, is_stopping, cookie=None
+    ) -> DouyinVideo:
+        del text, is_cancelled, is_stopping, cookie
+        calls["count"] += 1
+        raise MediaValidationError("无法解析抖音视频信息")
+
+    monkeypatch.setattr("app.worker.resolve_douyin_share", failing_resolve)
+
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "auto",
+            },
+        ).json()
+        failed = wait_for_status(client, created["id"], {"failed"})
+        assert calls["count"] == 2
+        assert failed["attempts"] == 2
+        assert failed["error_code"] == "INVALID_MEDIA"
+
+
+def test_link_task_success_with_cookie(settings: Settings, monkeypatch) -> None:
+    payload = wav_bytes(1.0)
+    seen_cookies: list[str] = []
+
+    def fake_resolve(text: str, *, is_cancelled, is_stopping, cookie=None):
+        del text, is_cancelled, is_stopping
+        seen_cookies.append(cookie or "")
+        return DouyinVideo(
+            video_id="7664455344306834715",
+            title="带 Cookie 的标题",
+            duration_ms=1000,
+            play_url="https://aweme.snssdk.com/aweme/v1/play/",
+        )
+
+    def fake_download(
+        play_url,
+        destination,
+        *,
+        size_limit,
+        on_progress,
+        is_cancelled,
+        is_stopping,
+        cookie=None,
+    ):
+        del play_url, size_limit, is_cancelled, is_stopping, cookie
+        destination.write_bytes(payload)
+        on_progress(len(payload), len(payload))
+        return len(payload), "cd" * 32
+
+    def fake_probe(path, ffprobe_bin, max_duration) -> MediaInfo:
+        del ffprobe_bin, max_duration
+        return MediaInfo(
+            duration_seconds=1,
+            format_name="wav",
+            audio_codec="pcm_s16le",
+            audio_channels=1,
+            sample_rate=16_000,
+            source_path=path,
+        )
+
+    monkeypatch.setattr("app.worker.resolve_douyin_share", fake_resolve)
+    monkeypatch.setattr("app.worker.download_video", fake_download)
+    monkeypatch.setattr("app.worker.probe_media", fake_probe)
+
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "zh",
+                "douyin_cookie": "sessionid=secret-value",
+            },
+        ).json()
+        completed = wait_for_status(client, created["id"], {"succeeded"})
+        assert seen_cookies == ["sessionid=secret-value"]
+        assert completed["has_douyin_cookie"] is True
+        assert "douyin_cookie" not in completed
+        assert "secret-value" not in json.dumps(completed)
+
+
+def test_link_task_accepts_long_douyin_cookie(settings: Settings) -> None:
+    with TestClient(create_app(settings)) as client:
+        long_cookie = "; ".join(f"key{index}=value{index}" for index in range(300))
+        assert len(long_cookie) > 2000
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "auto",
+                "douyin_cookie": long_cookie,
+            },
+        )
+        assert created.status_code == 201
+        payload = created.json()
+        assert payload["has_douyin_cookie"] is True
+        assert "douyin_cookie" not in payload
+
+
+def test_task_accepts_and_echoes_initial_prompt(settings: Settings) -> None:
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "zh",
+                "initial_prompt": "专有名词：张三",
+            },
+        ).json()
+        assert created["initial_prompt"] == "专有名词：张三"
+
+
+def test_upload_task_accepts_initial_prompt(settings: Settings) -> None:
+    with TestClient(create_app(settings)) as client:
+        payload = wav_bytes()
+        created = client.post(
+            "/api/tasks",
+            json={
+                "file_name": "prompted.wav",
+                "size_bytes": len(payload),
+                "content_type": "audio/wav",
+                "model": "tiny",
+                "language": "zh",
+                "initial_prompt": "人名：李四",
+            },
+        ).json()
+        assert created["initial_prompt"] == "人名：李四"
+        uploaded = client.put(
+            f"/api/tasks/{created['id']}/source",
+            content=payload,
+            headers={"Content-Type": "audio/wav"},
+        )
+        assert uploaded.status_code == 200
+        assert uploaded.json()["initial_prompt"] == "人名：李四"
+
+
+def test_idempotency_rejects_different_initial_prompt(settings: Settings) -> None:
+    with TestClient(create_app(settings)) as client:
+        body = {
+            "file_name": "one.wav",
+            "size_bytes": 100,
+            "content_type": "audio/wav",
+            "model": "tiny",
+            "language": "auto",
+        }
+        assert (
+            client.post(
+                "/api/tasks", json=body, headers={"Idempotency-Key": "prompt-key"}
+            ).status_code
+            == 201
+        )
+        body["initial_prompt"] = "张三"
+        conflict = client.post(
+            "/api/tasks", json=body, headers={"Idempotency-Key": "prompt-key"}
+        )
+        assert conflict.status_code == 409
 
 
 def test_upload_validation_errors(settings: Settings) -> None:

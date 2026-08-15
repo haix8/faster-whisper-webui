@@ -11,6 +11,11 @@ class TaskCreate(BaseModel):
     content_type: str | None = Field(default=None, max_length=255)
     model: str = Field(min_length=1, max_length=200)
     language: str = Field(default="auto", min_length=2, max_length=20)
+    # 可选任务级提示词/热词：引导 Whisper 识别专有名词，仅影响生成，不改写结果。
+    initial_prompt: str | None = Field(default=None, max_length=500)
+    # 可选抖音登录 Cookie：仅用于本任务解析/下载请求，默认空。
+    # 抖音完整登录态 Cookie 动辄 2-5KB，上限放宽到 8192。
+    douyin_cookie: str | None = Field(default=None, max_length=8192)
 
     @field_validator("file_name")
     @classmethod
@@ -35,6 +40,16 @@ class TaskCreate(BaseModel):
     @field_validator("source_url")
     @classmethod
     def normalize_source_url(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+    @field_validator("initial_prompt")
+    @classmethod
+    def normalize_initial_prompt(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+    @field_validator("douyin_cookie")
+    @classmethod
+    def normalize_douyin_cookie(cls, value: str | None) -> str | None:
         return value.strip() if value and value.strip() else None
 
     @model_validator(mode="after")

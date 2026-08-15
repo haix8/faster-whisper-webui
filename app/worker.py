@@ -171,7 +171,33 @@ class TranscriptionWorker:
                 )
             source_url = task.get("source_url")
             if source_url and not source_path.is_file():
-                self._download_source(task_id, str(source_url), source_path)
+                try:
+                    self._download_source(
+                        task_id,
+                        str(source_url),
+                        source_path,
+                        cookie=task.get("douyin_cookie"),
+                    )
+                except (TaskCancelled, WorkerStopping, BackendUnavailable):
+                    raise
+                except Exception as error:
+                    if self._should_auto_requeue(task):
+                        self.database.release_to_queue(
+                            task_id,
+                            f"抖音解析/下载失败，已自动重新排队：{_safe_error(error)}",
+                        )
+                        logger.warning(
+                            "download failed, auto requeue task_id=%s attempts=%s",
+                            task_id,
+                            task.get("attempts"),
+                        )
+                        return
+                    self.database.finish_failure(
+                        task_id,
+                        getattr(error, "code", "PROCESSING_FAILED"),
+                        _safe_error(error),
+                    )
+                    return
             if not source_path.is_file():
                 raise RuntimeError("任务源文件不存在")
 
@@ -230,6 +256,7 @@ class TranscriptionWorker:
                 on_progress=on_progress,
                 is_cancelled=lambda: self.database.is_cancel_requested(task_id),
                 is_stopping=self._stop_event.is_set,
+                initial_prompt=task.get("initial_prompt"),
             )
             self._raise_if_interrupted(task_id)
             self.database.update_progress(
@@ -289,7 +316,12 @@ class TranscriptionWorker:
             )
 
     def _download_source(
-        self, task_id: str, source_url: str, destination: Path
+        self,
+        task_id: str,
+        source_url: str,
+        destination: Path,
+        *,
+        cookie: str | None = None,
     ) -> None:
         self.database.update_progress(
             task_id,
@@ -301,6 +333,7 @@ class TranscriptionWorker:
             source_url,
             is_cancelled=lambda: self.database.is_cancel_requested(task_id),
             is_stopping=self._stop_event.is_set,
+            cookie=cookie,
         )
         title = video.title[:36] if video.title else "视频"
         self.database.update_progress(
@@ -341,6 +374,7 @@ class TranscriptionWorker:
             on_progress=on_download_progress,
             is_cancelled=lambda: self.database.is_cancel_requested(task_id),
             is_stopping=self._stop_event.is_set,
+            cookie=cookie,
         )
         media = probe_media(
             destination,
@@ -358,6 +392,9 @@ class TranscriptionWorker:
             original_name=video.title[:255] if video.title else None,
         )
         self._raise_if_interrupted(task_id)
+
+    def _should_auto_requeue(self, task: dict[str, object]) -> bool:
+        return int(task.get("attempts") or 0) < int(task.get("max_attempts") or 1)
 
     def _raise_if_interrupted(self, task_id: str) -> None:
         if self.database.is_cancel_requested(task_id):

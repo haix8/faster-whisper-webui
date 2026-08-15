@@ -39,6 +39,7 @@ class FakeBackend(TranscriptionBackend):
         on_progress,
         is_cancelled,
         is_stopping,
+        initial_prompt: str | None = None,
     ) -> TranscriptionResult:
         del audio_path
         self.loaded_model = model_name

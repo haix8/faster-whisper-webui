@@ -219,6 +219,8 @@ def create_app(
             max_attempts=resolved_settings.max_task_attempts,
             idempotency_key=idempotency_key,
             source_url=payload.source_url,
+            initial_prompt=payload.initial_prompt,
+            douyin_cookie=payload.douyin_cookie,
         )
         if created:
             runtime.storage.create_task_dir(task["id"])
@@ -487,6 +489,9 @@ def serialize_task(
     task: dict[str, Any], *, include_result: bool = False
 ) -> dict[str, Any]:
     result = dict(task)
+    # douyin_cookie 是用户抖音登录凭证，永不回显明文，仅暴露是否有设置。
+    result["has_douyin_cookie"] = bool(task.get("douyin_cookie"))
+    result.pop("douyin_cookie", None)
     if not include_result:
         result.pop("result_text", None)
     status_value = TaskStatus(result["status"])
@@ -545,6 +550,8 @@ def _same_create_request(task: dict[str, Any], payload: TaskCreate) -> bool:
         and task["model_name"] == payload.model
         and task["language_requested"] == payload.language
         and task["source_url"] == payload.source_url
+        and task["initial_prompt"] == payload.initial_prompt
+        and task["douyin_cookie"] == payload.douyin_cookie
     )
 
 

@@ -69,3 +69,61 @@ def test_chinese_prompt_is_only_used_for_explicit_chinese(tmp_path: Path) -> Non
     assert calls[0]["word_timestamps"] is True
     assert calls[1]["word_timestamps"] is True
     assert result.text == "你好，世界？"
+
+
+def test_task_prompt_merges_with_global_zh_prompt(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        model_dir=tmp_path / "models",
+        transcription_models="turbo",
+        default_model="turbo",
+        transcription_initial_prompt_zh="使用自然、规范的中文标点。",
+    )
+    backend = FasterWhisperBackend(settings)
+    calls: list[dict[str, object]] = []
+
+    class Model:
+        def transcribe(self, _audio_path: str, **options):
+            calls.append(options)
+            return (
+                [SimpleNamespace(start=0, end=1, text="你好。")],
+                SimpleNamespace(language=options["language"], language_probability=1),
+            )
+
+    backend._resolve_runtime = lambda: ("cpu", "int8")  # type: ignore[method-assign]
+    backend._load_model = lambda *_args: Model()  # type: ignore[method-assign]
+    callbacks = {
+        "on_progress": lambda *_args: None,
+        "is_cancelled": lambda: False,
+        "is_stopping": lambda: False,
+    }
+
+    backend.transcribe(
+        tmp_path / "audio.wav",
+        model_name="turbo",
+        language="zh",
+        duration_seconds=1,
+        **callbacks,
+        initial_prompt="专有名词：张三\n专有名词：李四",
+    )
+    backend.transcribe(
+        tmp_path / "audio.wav",
+        model_name="turbo",
+        language="en",
+        duration_seconds=1,
+        **callbacks,
+        initial_prompt="Alice, Bob",
+    )
+    backend.transcribe(
+        tmp_path / "audio.wav",
+        model_name="turbo",
+        language="en",
+        duration_seconds=1,
+        **callbacks,
+    )
+
+    assert calls[0]["initial_prompt"] == (
+        "使用自然、规范的中文标点。\n专有名词：张三\n专有名词：李四"
+    )
+    assert calls[1]["initial_prompt"] == "Alice, Bob"
+    assert calls[2]["initial_prompt"] is None

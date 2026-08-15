@@ -9,9 +9,9 @@
     />
     <title>声迹 · 转写工作台</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css?v=0.1.6" />
-    <script src="/static/upload-id.js?v=0.1.6" defer></script>
-    <script src="/static/app.js?v=0.1.6" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=0.1.11" />
+    <script src="/static/upload-id.js?v=0.1.11" defer></script>
+    <script src="/static/app.js?v=0.1.11" defer></script>
   </head>
   <body>
     <div class="ambient-grid" aria-hidden="true"></div>
@@ -134,7 +134,20 @@
                   placeholder="粘贴抖音分享链接或整段口令文本，例如 https://v.douyin.com/xxxxx/"
                 ></textarea>
                 <small
-                  >支持 v.douyin.com 短链、完整链接与整段分享口令；视频在服务器端下载。</small
+                  >支持 v.douyin.com 短链、完整链接与整段分享口令；每行一个链接可批量创建多个任务；视频在服务器端下载。</small
+                >
+              </label>
+              <label class="field">
+                <span>抖音 Cookie（可选）</span>
+                <input
+                  id="douyinCookieInput"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="粘贴浏览器抖音登录态 Cookie，可降低解析风控"
+                />
+                <small
+                  >仅用于本次任务的链接解析与下载，只在当前浏览器保存。</small
                 >
               </label>
               <div class="link-box-actions">
@@ -163,6 +176,16 @@
                 <option value="auto">自动检测</option>
               </select>
               <small>已知语言时手动选择，可跳过语言检测。</small>
+            </label>
+            <label class="field">
+              <span>术语 / 提示词</span>
+              <textarea
+                id="initialPromptInput"
+                rows="2"
+                maxlength="500"
+                placeholder="可选。填写人名、产品名等专有名词，每行一个，可降低识别错字。"
+              ></textarea>
+              <small>仅用于引导识别，不修改转写原文。</small>
             </label>
             <div class="limit-note">
               <span>LIMIT</span>

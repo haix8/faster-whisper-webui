@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     max_attempts INTEGER NOT NULL DEFAULT 2,
     source_path TEXT,
     source_url TEXT,
+    initial_prompt TEXT,
+    douyin_cookie TEXT,
     error_code TEXT,
     error_message TEXT,
     worker_id TEXT,
@@ -88,6 +90,10 @@ class Database:
         }
         if "source_url" not in existing_columns:
             connection.execute("ALTER TABLE tasks ADD COLUMN source_url TEXT")
+        if "initial_prompt" not in existing_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN initial_prompt TEXT")
+        if "douyin_cookie" not in existing_columns:
+            connection.execute("ALTER TABLE tasks ADD COLUMN douyin_cookie TEXT")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
@@ -123,6 +129,8 @@ class Database:
         max_attempts: int,
         idempotency_key: str | None,
         source_url: str | None = None,
+        initial_prompt: str | None = None,
+        douyin_cookie: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         now = utc_now()
         task_id = str(uuid4())
@@ -162,9 +170,9 @@ class Database:
                         id, idempotency_key, original_name, source_extension,
                         content_type, expected_size_bytes, language_requested,
                         model_name, status, stage, progress, message,
-                        max_attempts, source_url, created_at, updated_at,
-                        queued_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+                        max_attempts, source_url, initial_prompt, douyin_cookie,
+                        created_at, updated_at, queued_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -180,6 +188,8 @@ class Database:
                         message,
                         max_attempts,
                         source_url,
+                        initial_prompt,
+                        douyin_cookie,
                         now,
                         now,
                         queued_at,

@@ -67,6 +67,7 @@ class FasterWhisperBackend(TranscriptionBackend):
         on_progress,
         is_cancelled,
         is_stopping,
+        initial_prompt: str | None = None,
     ) -> TranscriptionResult:
         device, compute_type = self._resolve_runtime()
         if is_cancelled():
@@ -80,11 +81,13 @@ class FasterWhisperBackend(TranscriptionBackend):
         if is_stopping():
             raise WorkerStopping("服务正在停止")
         requested_language = None if language in (None, "auto") else language
-        initial_prompt = (
-            self.settings.transcription_initial_prompt_zh
-            if requested_language == "zh"
-            else ""
-        )
+        # 全局中文提示只用于显式 zh；任务级提示词不受语言限制，合并后一起注入。
+        prompt_parts = []
+        if requested_language == "zh" and self.settings.transcription_initial_prompt_zh:
+            prompt_parts.append(self.settings.transcription_initial_prompt_zh)
+        if initial_prompt:
+            prompt_parts.append(initial_prompt)
+        combined_prompt = "\n".join(prompt_parts) if prompt_parts else None
         try:
             raw_segments, info = model.transcribe(
                 str(audio_path),
@@ -93,7 +96,7 @@ class FasterWhisperBackend(TranscriptionBackend):
                 vad_filter=self.settings.vad_filter,
                 word_timestamps=True,
                 condition_on_previous_text=True,
-                initial_prompt=initial_prompt or None,
+                initial_prompt=combined_prompt,
             )
             detected_language = getattr(info, "language", requested_language)
             segments: list[Segment] = []

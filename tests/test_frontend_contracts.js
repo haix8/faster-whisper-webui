@@ -82,23 +82,55 @@ test("long timelines use a bounded, independently scrollable region", () => {
   );
 });
 
-test("index loads the coordinated 0.1.6 static asset revision", () => {
-  assert.match(htmlSource, /styles\.css\?v=0\.1\.6/);
-  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.6/);
-  assert.match(htmlSource, /app\.js\?v=0\.1\.6/);
+test("index loads the coordinated 0.1.11 static asset revision", () => {
+  assert.match(htmlSource, /styles\.css\?v=0\.1\.11/);
+  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.11/);
+  assert.match(htmlSource, /app\.js\?v=0\.1\.11/);
 });
 
-test("link source mode creates a douyin task without a file", () => {
+test("link source mode creates douyin tasks without a file", () => {
   assert.match(htmlSource, /id="tabUpload"/);
   assert.match(htmlSource, /id="tabLink"/);
   assert.match(htmlSource, /id="linkInput"/);
   assert.match(htmlSource, /id="createLinkTask"/);
   assert.match(appSource, /function switchSourceMode\(mode\)/);
   assert.match(appSource, /function createLinkTaskFlow\(\)/);
-  assert.match(appSource, /function extractLinkUrl\(text\)/);
+  assert.match(appSource, /function createLinkTask\(url\)/);
+  assert.match(appSource, /function extractLinkUrls\(text\)/);
   assert.match(
     appSource,
     /JSON\.stringify\(\{\s*source_url: url,\s*model: elements\.modelSelect\.value/,
   );
   assert.match(appSource, /downloading: "下载视频"/);
+});
+
+test("link source mode supports multiple pasted urls per session", () => {
+  assert.match(appSource, /function extractLinkUrls\(text\)/);
+  assert.match(appSource, /matchAll\(pattern\)/);
+  assert.match(appSource, /runWithConcurrency\(urls, 2, createLinkTask\)/);
+  assert.match(appSource, /if \(!\/douyin\\.com\/i\.test\(url\)\) continue;/);
+});
+
+test("task detail shows the full source link with a copy action", () => {
+  assert.match(appSource, /data-action="copy-value"/);
+  assert.match(appSource, /function handleMetadataAction\(event\)/);
+  assert.match(appSource, /elements\.dialogMetadata\.addEventListener\("click", handleMetadataAction\)/);
+  assert.match(appSource, /meta-item meta-item-wide/);
+  assert.match(cssSource, /\.meta-item-wide\s*\{\s*grid-column: 1 \/ -1;/);
+  assert.match(cssSource, /\.meta-link-row \.link-value[\s\S]*?word-break: break-all;/);
+});
+
+test("tasks carry an optional per-task prompt and douyin cookie", () => {
+  assert.match(htmlSource, /id="initialPromptInput"/);
+  assert.match(htmlSource, /id="douyinCookieInput"/);
+  assert.match(htmlSource, /id="douyinCookieInput"[\s\S]*?type="text"/);
+  assert.match(appSource, /function collectInitialPrompt\(\)/);
+  assert.match(appSource, /function loadDouyinCookie\(\)/);
+  assert.match(appSource, /function collectDouyinCookie\(\)/);
+  assert.match(
+    appSource,
+    /initial_prompt: collectInitialPrompt\(\),\s*douyin_cookie: collectDouyinCookie\(\)/,
+  );
+  assert.match(appSource, /window\.localStorage\.getItem\("douyin_cookie"\)/);
+  assert.match(appSource, /elements\.douyinCookieInput\.value = loadDouyinCookie\(\)/);
 });

@@ -238,6 +238,44 @@ def test_legacy_database_gains_source_url_column(tmp_path: Path) -> None:
     assert "source_url" in columns
 
 
+def test_legacy_database_gains_prompt_and_cookie_columns(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    with database.connect() as connection:
+        connection.execute("ALTER TABLE tasks DROP COLUMN initial_prompt")
+        connection.execute("ALTER TABLE tasks DROP COLUMN douyin_cookie")
+
+    database.initialize()
+
+    with database.connect() as connection:
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(tasks)")
+        }
+    assert "initial_prompt" in columns
+    assert "douyin_cookie" in columns
+
+
+def test_create_task_stores_prompt_and_cookie(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    task, created = database.create_task(
+        original_name="custom.wav",
+        source_extension=".wav",
+        content_type="audio/wav",
+        expected_size_bytes=100,
+        language_requested="zh",
+        model_name="small",
+        max_attempts=2,
+        idempotency_key=None,
+        source_url=None,
+        initial_prompt="专有名词：张三、声迹",
+        douyin_cookie="sessionid=abc; tt_webid=123",
+    )
+    assert created is True
+    assert task["initial_prompt"] == "专有名词：张三、声迹"
+    assert task["douyin_cookie"] == "sessionid=abc; tt_webid=123"
+
+
 def test_queued_cancel_and_manual_retry(tmp_path: Path) -> None:
     database = Database(tmp_path / "app.sqlite3")
     database.initialize()

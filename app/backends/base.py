@@ -27,5 +27,6 @@ class TranscriptionBackend(ABC):
         on_progress: ProgressCallback,
         is_cancelled: CancelCallback,
         is_stopping: CancelCallback,
+        initial_prompt: str | None = None,
     ) -> TranscriptionResult:
         """Transcribe one normalized audio file."""

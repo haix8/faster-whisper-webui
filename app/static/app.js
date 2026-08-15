@@ -34,6 +34,8 @@ const elements = {
   createLinkTask: document.querySelector("#createLinkTask"),
   modelSelect: document.querySelector("#modelSelect"),
   languageSelect: document.querySelector("#languageSelect"),
+  initialPromptInput: document.querySelector("#initialPromptInput"),
+  douyinCookieInput: document.querySelector("#douyinCookieInput"),
   modelHint: document.querySelector("#modelHint"),
   uploadLimit: document.querySelector("#uploadLimit"),
   uploadQueue: document.querySelector("#uploadQueue"),
@@ -91,6 +93,7 @@ document.addEventListener("DOMContentLoaded", bootstrap);
 
 async function bootstrap() {
   bindEvents();
+  elements.douyinCookieInput.value = loadDouyinCookie();
   tickClock();
   window.setInterval(tickClock, 1000);
   try {
@@ -136,6 +139,7 @@ function bindEvents() {
   });
 
   elements.modelSelect.addEventListener("change", updateModelHint);
+  elements.douyinCookieInput.addEventListener("change", saveDouyinCookie);
   elements.tabUpload.addEventListener("click", () => switchSourceMode("upload"));
   elements.tabLink.addEventListener("click", () => switchSourceMode("link"));
   elements.createLinkTask.addEventListener("click", createLinkTaskFlow);
@@ -166,6 +170,7 @@ function bindEvents() {
   elements.nextPage.addEventListener("click", () => changePage(1));
   elements.taskList.addEventListener("click", handleTaskAction);
   elements.dialogActions.addEventListener("click", handleDialogAction);
+  elements.dialogMetadata.addEventListener("click", handleMetadataAction);
   elements.dialogClose.addEventListener("click", () => elements.dialog.close());
   elements.dialog.addEventListener("close", () => {
     state.currentDetailId = null;
@@ -371,16 +376,16 @@ async function createLinkTaskFlow() {
     toast("服务配置尚未载入", true);
     return;
   }
-  const text = elements.linkInput.value.trim();
-  if (!text) {
-    toast("请先粘贴抖音分享链接或口令", true);
+  const urls = extractLinkUrls(elements.linkInput.value);
+  if (!urls.length) {
+    toast("未在文本中找到抖音分享链接，请粘贴完整链接或整段口令", true);
     return;
   }
-  const url = extractLinkUrl(text);
-  if (!url) {
-    toast("未在文本中找到链接，请粘贴完整的抖音分享链接", true);
-    return;
-  }
+  await runWithConcurrency(urls, 2, createLinkTask);
+  await refreshAll();
+}
+
+async function createLinkTask(url) {
   const localId = window.WhisperUploadId.create();
   state.uploads.set(localId, {
     id: localId,
@@ -402,6 +407,8 @@ async function createLinkTaskFlow() {
         source_url: url,
         model: elements.modelSelect.value,
         language: elements.languageSelect.value,
+        initial_prompt: collectInitialPrompt(),
+        douyin_cookie: collectDouyinCookie(),
       }),
     });
     updateUpload(localId, {
@@ -410,13 +417,11 @@ async function createLinkTaskFlow() {
       progress: 100,
       message: "已入队，等待下载",
     });
-    elements.linkInput.value = "";
     window.setTimeout(() => {
       state.uploads.delete(localId);
       renderUploads();
     }, 5000);
     toast("链接任务已创建");
-    await refreshAll();
   } catch (error) {
     updateUpload(localId, {
       status: "failed",
@@ -426,9 +431,56 @@ async function createLinkTaskFlow() {
   }
 }
 
-function extractLinkUrl(text) {
-  const match = text.match(/https?:\/\/[^\s　，,；;：:！!？?、()（）]+/);
-  return match ? match[0].replace(/\/+$/, "") : null;
+function extractLinkUrls(text) {
+  const urls = [];
+  const seen = new Set();
+  const pattern = /https?:\/\/[^\s　，,；;：:！!？?、()（）]+/g;
+  for (const match of (text || "").matchAll(pattern)) {
+    const url = match[0].replace(/\/+$/, "").replace(/[.,;，。；]+$/, "");
+    if (!/douyin\.com/i.test(url)) continue;
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+function collectInitialPrompt() {
+  return elements.initialPromptInput?.value.trim() || null;
+}
+
+function loadDouyinCookie() {
+  try {
+    return window.localStorage.getItem("douyin_cookie") || "";
+  } catch {
+    return "";
+  }
+}
+
+function saveDouyinCookie() {
+  const value = elements.douyinCookieInput.value.trim();
+  try {
+    if (value) {
+      window.localStorage.setItem("douyin_cookie", value);
+    } else {
+      window.localStorage.removeItem("douyin_cookie");
+    }
+  } catch {
+    // localStorage 不可用时仅本次生效。
+  }
+}
+
+function collectDouyinCookie() {
+  const value = elements.douyinCookieInput.value.trim();
+  if (value) {
+    try {
+      window.localStorage.setItem("douyin_cookie", value);
+    } catch {
+      // localStorage 不可用时仅本次生效。
+    }
+  }
+  return value || null;
 }
 
 async function handleFiles(files) {
@@ -474,6 +526,7 @@ async function uploadFile(file) {
         content_type: file.type || null,
         model: elements.modelSelect.value,
         language: elements.languageSelect.value,
+        initial_prompt: collectInitialPrompt(),
       }),
     });
     updateUpload(localId, {
@@ -564,6 +617,13 @@ async function handleDialogAction(event) {
   await performAction(target.dataset.action, target.dataset.id);
 }
 
+async function handleMetadataAction(event) {
+  const target = event.target.closest("[data-action='copy-value']");
+  if (!target) return;
+  const copied = await writeClipboardText(target.dataset.value || "");
+  toast(copied ? "链接已复制" : "复制失败，请手动复制", !copied);
+}
+
 async function performAction(action, taskId) {
   try {
     if (action === "detail") {
@@ -622,16 +682,26 @@ async function openDetail(taskId, show = true) {
     ["处理耗时", formatDuration(taskElapsed(task))],
   ];
   if (task.source_url) {
-    metadataRows.push(["来源链接", task.source_url]);
+    metadataRows.push(["来源链接", task.source_url, true]);
   }
   elements.dialogMetadata.innerHTML = metadataRows
-    .map(
-      ([label, value]) => `
+    .map(([label, value, wide = false]) => {
+      if (wide) {
+        return `
+          <div class="meta-item meta-item-wide">
+            <span>${escapeHtml(label)}</span>
+            <div class="meta-link-row">
+              <strong class="link-value">${escapeHtml(String(value ?? "—"))}</strong>
+              <button type="button" data-action="copy-value" data-value="${escapeHtml(String(value ?? ""))}" title="复制链接">复制</button>
+            </div>
+          </div>`;
+      }
+      return `
         <div class="meta-item">
           <span>${escapeHtml(label)}</span>
           <strong title="${escapeHtml(String(value ?? "—"))}">${escapeHtml(String(value ?? "—"))}</strong>
-        </div>`,
-    )
+        </div>`;
+    })
     .join("");
 
   const actions = [];
