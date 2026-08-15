@@ -715,9 +715,23 @@ async function openDetail(taskId, show = true) {
       `<button class="primary" data-action="retry" data-id="${task.id}">重新转写</button>`,
     );
   }
-  for (const [kind, url] of Object.entries(task.artifacts || {})) {
+  const artifactLabels = {
+    source: task.source_url ? "无水印视频" : "原始文件",
+    json: "JSON",
+    txt: "TXT",
+    srt: "SRT",
+    vtt: "VTT",
+  };
+  const artifactEntries = Object.entries(task.artifacts || {});
+  // 源文件（原始文件/无水印视频）置顶展示。
+  artifactEntries.sort(([kindA], [kindB]) => {
+    if (kindA === "source") return -1;
+    if (kindB === "source") return 1;
+    return 0;
+  });
+  for (const [kind, url] of artifactEntries) {
     actions.push(
-      `<a href="${url}" download>下载 ${kind.toUpperCase()}</a>`,
+      `<a href="${url}" download>下载 ${artifactLabels[kind] || kind.toUpperCase()}</a>`,
     );
   }
   if (task.actions.delete) {

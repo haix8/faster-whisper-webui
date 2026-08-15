@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -228,7 +229,11 @@ def create_app(
             if not _same_create_request(task, payload):
                 raise HTTPException(409, "Idempotency-Key 已被参数不同的创建请求使用")
             response.status_code = status.HTTP_200_OK
-        return serialize_task(task, include_result=True)
+        return serialize_task(
+            task,
+            include_result=True,
+            source_exists=runtime.storage.source_exists(task),
+        )
 
     @application.put("/api/tasks/{task_id}/source")
     async def upload_source(task_id: str, request: Request) -> dict[str, Any]:
@@ -348,7 +353,11 @@ def create_app(
             )
             raise HTTPException(500, "上传处理失败") from error
         runtime.worker.wake()
-        return serialize_task(updated, include_result=True)
+        return serialize_task(
+            updated,
+            include_result=True,
+            source_exists=runtime.storage.source_exists(updated),
+        )
 
     @application.get("/api/tasks")
     def list_tasks(
@@ -371,7 +380,13 @@ def create_app(
             search=search.strip() if search else None,
         )
         return {
-            "items": [serialize_task(item) for item in items],
+            "items": [
+                serialize_task(
+                    item,
+                    source_exists=runtime.storage.source_exists(item),
+                )
+                for item in items
+            ],
             "total": total,
             "page": page,
             "page_size": page_size,
@@ -382,7 +397,11 @@ def create_app(
         task = runtime.database.get_task(require_task_id(task_id))
         if not task:
             raise HTTPException(404, "任务不存在")
-        return serialize_task(task, include_result=True)
+        return serialize_task(
+            task,
+            include_result=True,
+            source_exists=runtime.storage.source_exists(task),
+        )
 
     @application.post("/api/tasks/{task_id}/cancel")
     def cancel_task(task_id: str) -> dict[str, Any]:
@@ -392,7 +411,11 @@ def create_app(
         except KeyError as error:
             raise HTTPException(404, "任务不存在") from error
         runtime.worker.wake()
-        return serialize_task(task, include_result=True)
+        return serialize_task(
+            task,
+            include_result=True,
+            source_exists=runtime.storage.source_exists(task),
+        )
 
     @application.post("/api/tasks/{task_id}/retry")
     def retry_task(task_id: str) -> dict[str, Any]:
@@ -411,7 +434,11 @@ def create_app(
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
         runtime.worker.wake()
-        return serialize_task(updated, include_result=True)
+        return serialize_task(
+            updated,
+            include_result=True,
+            source_exists=runtime.storage.source_exists(updated),
+        )
 
     @application.delete("/api/tasks/{task_id}", status_code=204)
     def delete_task(task_id: str) -> Response:
@@ -465,6 +492,28 @@ def create_app(
             filename=f"{stem}.{kind}",
         )
 
+    @application.get("/api/tasks/{task_id}/source")
+    def download_source(task_id: str) -> FileResponse:
+        """下载任务源文件：上传任务为原始文件，链接任务为无水印视频。"""
+        canonical_id = require_task_id(task_id)
+        task = runtime.database.get_task(canonical_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
+        if not runtime.storage.source_exists(task):
+            raise HTTPException(404, "任务源文件不存在")
+        source_path = runtime.storage.resolve_relative(str(task["source_path"]))
+        extension = Path(source_path.name).suffix or str(
+            task.get("source_extension") or ""
+        )
+        base = _safe_download_name(str(task.get("original_name") or ""))
+        if not Path(base).suffix:
+            base = f"{base}{extension}"
+        return FileResponse(
+            source_path,
+            media_type=_source_media_type(extension),
+            filename=base,
+        )
+
     @application.get("/api/system/status")
     def system_status() -> dict[str, Any]:
         disk = shutil.disk_usage(runtime.storage.data_dir)
@@ -486,7 +535,10 @@ def create_app(
 
 
 def serialize_task(
-    task: dict[str, Any], *, include_result: bool = False
+    task: dict[str, Any],
+    *,
+    include_result: bool = False,
+    source_exists: bool = False,
 ) -> dict[str, Any]:
     result = dict(task)
     # douyin_cookie 是用户抖音登录凭证，永不回显明文，仅暴露是否有设置。
@@ -509,11 +561,19 @@ def serialize_task(
             TaskStatus.DELETE_FAILED,
         },
     }
-    result["artifacts"] = (
-        {kind: f"/api/tasks/{result['id']}/artifacts/{kind}" for kind in ARTIFACT_FILES}
-        if status_value is TaskStatus.SUCCEEDED
-        else {}
-    )
+    artifacts: dict[str, str] = {}
+    # 源文件（上传原文件 / 链接下载的无水印视频）只要已落盘即可下载，
+    # 与任务最终状态无关：失败/取消任务同样保留源文件。
+    if source_exists:
+        artifacts["source"] = f"/api/tasks/{result['id']}/source"
+    if status_value is TaskStatus.SUCCEEDED:
+        artifacts.update(
+            {
+                kind: f"/api/tasks/{result['id']}/artifacts/{kind}"
+                for kind in ARTIFACT_FILES
+            }
+        )
+    result["artifacts"] = artifacts
     return result
 
 
@@ -582,6 +642,38 @@ def _artifact_media_type(kind: str) -> str:
         "srt": "application/x-subrip",
         "vtt": "text/vtt; charset=utf-8",
     }[kind]
+
+
+_SOURCE_MEDIA_TYPES = {
+    ".aac": "audio/aac",
+    ".aiff": "audio/aiff",
+    ".avi": "video/x-msvideo",
+    ".flac": "audio/flac",
+    ".m4a": "audio/mp4",
+    ".m4v": "video/x-m4v",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".mp4": "video/mp4",
+    ".mpeg": "video/mpeg",
+    ".mpg": "video/mpeg",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".wav": "audio/wav",
+    ".webm": "video/webm",
+    ".wma": "audio/x-ms-wma",
+    ".wmv": "video/x-ms-wmv",
+}
+
+
+def _source_media_type(extension: str) -> str:
+    return _SOURCE_MEDIA_TYPES.get(extension.lower(), "application/octet-stream")
+
+
+def _safe_download_name(name: str) -> str:
+    """清洗下载文件名：控制字符与路径分隔符折叠，去除首尾空白。"""
+    cleaned = re.sub(r"[\x00-\x1f\x7f/\\:]+", " ", name)
+    return re.sub(r"\s+", " ", cleaned).strip() or "source"
 
 
 logging.basicConfig(

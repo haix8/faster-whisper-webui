@@ -109,6 +109,16 @@ class Storage:
         self._ensure_inside(path, self.data_dir)
         return path
 
+    def source_exists(self, task: dict[str, object]) -> bool:
+        """任务源文件（上传原文件或链接下载的视频）是否已落盘。"""
+        relative = task.get("source_path")
+        if not relative or not isinstance(relative, str):
+            return False
+        try:
+            return self.resolve_relative(relative).is_file()
+        except ValueError:
+            return False
+
     def free_bytes(self) -> int:
         return shutil.disk_usage(self.data_dir).free
 

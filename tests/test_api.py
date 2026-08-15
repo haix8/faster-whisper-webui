@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
@@ -70,9 +71,9 @@ def test_index_disables_browser_cache(settings: Settings) -> None:
 
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert "/static/styles.css?v=0.1.11" in response.text
-        assert "/static/upload-id.js?v=0.1.11" in response.text
-        assert "/static/app.js?v=0.1.11" in response.text
+        assert "/static/styles.css?v=0.1.12" in response.text
+        assert "/static/upload-id.js?v=0.1.12" in response.text
+        assert "/static/app.js?v=0.1.12" in response.text
 
 
 def test_config_exposes_default_language(settings: Settings) -> None:
@@ -93,10 +94,14 @@ def test_end_to_end_task_and_artifacts(settings: Settings) -> None:
             "这是一个测试转写结果。Faster Whisper WebUI 已完成任务。"
         )
         assert completed["device"] == "cpu"
+        assert completed["artifacts"]["source"] == (f"/api/tasks/{task['id']}/source")
 
         listed = client.get("/api/tasks").json()
         assert listed["total"] == 1
         assert "result_text" not in listed["items"][0]
+        assert listed["items"][0]["artifacts"]["source"] == (
+            f"/api/tasks/{task['id']}/source"
+        )
 
         for kind in ("json", "txt", "srt", "vtt"):
             artifact = client.get(f"/api/tasks/{task['id']}/artifacts/{kind}")
@@ -105,6 +110,51 @@ def test_end_to_end_task_and_artifacts(settings: Settings) -> None:
         result = json.loads(client.get(f"/api/tasks/{task['id']}/artifacts/json").text)
         assert result["schema_version"] == 1
         assert len(result["segments"]) == 2
+
+        source = client.get(f"/api/tasks/{task['id']}/source")
+        assert source.status_code == 200
+        assert source.content == wav_bytes(1.0)
+        assert "attachment" in source.headers.get("content-disposition", "")
+        assert "safe.wav" in source.headers.get("content-disposition", "")
+
+
+def test_upload_task_source_download_requires_source_file(
+    settings: Settings,
+) -> None:
+    """未完成上传的任务没有源文件，下载返回 404。"""
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/tasks",
+            json={
+                "file_name": "missing.wav",
+                "size_bytes": 100,
+                "content_type": "audio/wav",
+                "model": "tiny",
+                "language": "zh",
+            },
+        ).json()
+        assert created["status"] == "uploading"
+        assert created["artifacts"] == {}
+
+        response = client.get(f"/api/tasks/{created['id']}/source")
+        assert response.status_code == 404
+
+
+def test_failed_task_still_downloads_source(settings: Settings, monkeypatch) -> None:
+    """转写失败但源文件已上传的任务同样可下载原始文件。"""
+
+    def failing_transcribe(self, audio_path, **kwargs):
+        del audio_path, kwargs
+        raise RuntimeError("模拟转写失败")
+
+    monkeypatch.setattr("app.backends.fake.FakeBackend.transcribe", failing_transcribe)
+    with TestClient(create_app(settings)) as client:
+        task = create_and_upload(client, name="keepme.wav")
+        failed = wait_for_status(client, task["id"], {"failed"})
+        assert failed["artifacts"]["source"] == f"/api/tasks/{task['id']}/source"
+        source = client.get(f"/api/tasks/{task['id']}/source")
+        assert source.status_code == 200
+        assert source.content == wav_bytes(1.0)
 
 
 def test_idempotency_returns_existing_upload_task(settings: Settings) -> None:
@@ -326,6 +376,16 @@ def test_link_task_end_to_end(settings: Settings, monkeypatch) -> None:
         assert completed["sha256"] == "ab" * 32
         assert completed["source_url"] == "https://v.douyin.com/FAV7NYgWNuE"
         assert completed["language_detected"] == "zh"
+        assert completed["artifacts"]["source"] == (
+            f"/api/tasks/{created['id']}/source"
+        )
+
+        source = client.get(f"/api/tasks/{created['id']}/source")
+        assert source.status_code == 200
+        assert source.content == payload
+        disposition = source.headers.get("content-disposition", "")
+        assert "attachment" in disposition
+        assert "端到端测试标题.mp4" in urllib.parse.unquote(disposition)
 
 
 def test_link_task_download_failure_can_retry(settings: Settings, monkeypatch) -> None:

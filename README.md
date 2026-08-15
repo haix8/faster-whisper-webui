@@ -12,6 +12,8 @@ SQLite 持久任务队列和单任务转写 Worker。
 - 取消、失败重试、删除；
 - 同一任务只接受一个上传流，删除文件失败时任务保持可见并可重试；
 - 正文预览及 JSON、TXT、SRT、VTT 下载，字幕按词级时间戳和语义边界生成；
+- 任务详情可下载源文件：上传任务为原始文件，链接任务为无水印视频（下载
+  失败或转写失败但源文件已就位的任务同样可下载）；
 - SQLite、源文件、模型缓存和结果持久化；
 - CPU 与 NVIDIA CUDA 两种容器构建；
 - GPU 不可用时可配置为明确停队列，不静默回退。
@@ -161,6 +163,7 @@ Metal 加速。
 - `POST /api/tasks/{id}/cancel` 取消；
 - `POST /api/tasks/{id}/retry` 重试；
 - `DELETE /api/tasks/{id}` 删除；
+- `GET /api/tasks/{id}/source` 下载任务源文件（上传原文件 / 链接下载的无水印视频）；
 - `GET /api/tasks/{id}/artifacts/{kind}` 下载结果；
 - `GET /api/system/status` 查询 Worker、设备、队列和磁盘。
 

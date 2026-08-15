@@ -82,10 +82,10 @@ test("long timelines use a bounded, independently scrollable region", () => {
   );
 });
 
-test("index loads the coordinated 0.1.11 static asset revision", () => {
-  assert.match(htmlSource, /styles\.css\?v=0\.1\.11/);
-  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.11/);
-  assert.match(htmlSource, /app\.js\?v=0\.1\.11/);
+test("index loads the coordinated 0.1.12 static asset revision", () => {
+  assert.match(htmlSource, /styles\.css\?v=0\.1\.12/);
+  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.12/);
+  assert.match(htmlSource, /app\.js\?v=0\.1\.12/);
 });
 
 test("link source mode creates douyin tasks without a file", () => {
@@ -133,4 +133,17 @@ test("tasks carry an optional per-task prompt and douyin cookie", () => {
   );
   assert.match(appSource, /window\.localStorage\.getItem\("douyin_cookie"\)/);
   assert.match(appSource, /elements\.douyinCookieInput\.value = loadDouyinCookie\(\)/);
+});
+
+test("task detail offers source file download with friendly labels", () => {
+  assert.match(appSource, /const artifactLabels = \{/);
+  assert.match(appSource, /source: task\.source_url \? "无水印视频" : "原始文件"/);
+  assert.match(
+    appSource,
+    /artifactEntries\.sort\(\(\[kindA\], \[kindB\]\) => \{\s*if \(kindA === "source"\) return -1;/,
+  );
+  assert.match(
+    appSource,
+    /下载 \$\{artifactLabels\[kind\] \|\| kind\.toUpperCase\(\)\}/,
+  );
 });
