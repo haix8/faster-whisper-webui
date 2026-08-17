@@ -71,9 +71,16 @@ queued/succeeded/failed/cancelled -> deleting -> deleted
 链接任务（`source_url` 非空）创建后直接入队，没有 `uploading` 阶段；下载是
 `running` 下的 `downloading` 阶段（`running` 合法阶段序列：
 `downloading -> preprocessing -> transcribing -> writing_results -> complete`），
-下载完成后 `source_path` 与媒体元数据写入任务记录，之后走与上传任务相同的链路。
+下载完成后 `source_path` 与媒体元数据写入任务记录，任务回到 `queued`（保留原排队
+时间）等待转写线程接手，之后走与上传任务相同的链路。
 
-Worker 使用 SQLite `BEGIN IMMEDIATE` 事务领取最早的 `queued` 任务。
+Worker 使用 SQLite `BEGIN IMMEDIATE` 事务按 `queued_at` 原子领取，分两个互斥通道：
+
+- 转写通道：`queued` 且（`source_url` 为空或 `source_path` 已就绪）的任务；
+- 下载通道：`queued` 且 `source_url` 非空、`source_path` 为空的任务。
+
+同一任务不会被两个线程同时领取；下载线程只做解析/下载/媒体校验，不加载模型、
+不占推理设备，与转写并行。
 
 重启恢复规则：
 
@@ -85,7 +92,8 @@ Worker 使用 SQLite `BEGIN IMMEDIATE` 事务领取最早的 `queued` 任务。
 - `queued`：保持排队；
 - 已完成、失败或取消任务保持原状态。
 
-GPU 默认只允许一个运行任务，避免多模型并发占满显存。
+GPU 默认只允许一个转写任务并发，避免多模型并发占满显存；链接任务下载由
+独立下载线程执行，不占用推理设备，因此可与转写并行。
 
 ## 5. 文件与结果
 

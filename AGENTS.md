@@ -18,7 +18,7 @@
 - `app/main.py`：FastAPI 应用、API 路由、生命周期和静态资源入口。
 - `app/config.py`：Pydantic Settings 与环境变量契约。
 - `app/db.py`：SQLite Schema、任务状态转换、原子领取和重启恢复。
-- `app/worker.py`：单 Worker 调度、心跳、取消、转写和结果发布流程。
+- `app/worker.py`：双线程调度（下载/转写）、心跳、取消、转写和结果发布流程。
 - `app/storage.py`：任务目录、上传临时文件、结果路径和路径逃逸防护。
 - `app/media.py`：`ffprobe` 校验与 `ffmpeg` 音频标准化。
 - `app/douyin.py`：抖音分享链接解析、无水印视频下载与 SSRF 域名白名单。
@@ -39,7 +39,9 @@
 
 - SQLite 任务表是队列和任务状态的唯一真相源，不维护第二套内存队列。
 - Worker 必须继续通过事务原子领取最早的 `queued` 任务；不得先查询再无条件更新。
-- 默认只有一个 Worker、一个运行任务，避免多模型并发挤满显存。
+- Worker 是双线程：下载线程只做链接任务解析/下载/媒体校验（不加载模型、不占推理设备），
+  同一时刻最多一个下载任务；转写线程同一时刻只转写一个任务，避免多模型并发挤满显存，
+  且只领取无需下载或源文件已就绪的任务。默认只有一个 Worker 容器。
 - 状态和阶段必须保持合法流转：
 
 ```text
@@ -53,7 +55,8 @@ failed/cancelled -> queued
 ```
 
 - 链接任务（`source_url` 非空）创建即入队，跳过 `uploading`；下载是 `running` 下的
-  `downloading` 阶段，不引入新状态。`source_url` 同时是链接任务重试的依据。
+  `downloading` 阶段，不引入新状态。下载完成后任务回到 `queued` 并保留原排队时间，
+  由转写线程按序接手。`source_url` 同时是链接任务重试的依据。
 - 取消是协作式的：下载、预处理和分段转写期间检查取消；模型首次下载或加载不能伪装成可立即中断。
 - 重启恢复必须覆盖未完成上传、未完成下载、运行中任务、取消请求和删除中任务，不能产生永久不可领取的记录。
 - 新增字段或状态时，要同步 Schema、序列化、列表/详情、操作权限、恢复逻辑和测试。现有 SQLite 没有独立迁移框架，Schema 变更必须显式处理历史数据库兼容，不能只修改 `CREATE TABLE IF NOT EXISTS`。
@@ -193,6 +196,8 @@ curl -fsS http://192.168.0.52:8000/api/system/status
 
 ### 7.2 部署原则
 
+- 整包部署：以本地仓库整体为唯一发布单元，先确认本地 `git status` 干净且 HEAD 是目标版本，再用整包方式同步（如 `git archive | tar` 或全量 rsync 排除清单），禁止按变更文件逐个拷贝。逐个文件同步容易造成服务器源码混搭（如 `main.py` 新版、`schemas.py` 旧版），导致运行时 `AttributeError` 类 500。
+- 同步后必须校验服务器与本地仓库内容一致：文件清单一致（rsync `--delete` + `--itemize-changes` 无残留差异，或比对每个源码文件的 SHA-256），再构建镜像。
 - 只同步本次范围内的源码、测试和文档；保留服务器 `.env`。
 - 不执行 `docker compose down -v`、`docker volume rm`、全局 `docker system prune` 或任何会删除数据/模型卷的操作。
 - 如果新增模型且生产为 `LOCAL_FILES_ONLY=true`，先以受控方式把完整模型缓存写入模型卷并验证，再把模型暴露给页面；不能让首个用户任务承担在线下载。
@@ -222,6 +227,7 @@ ssh dayu-server '
 '
 ```
 
+- 整包部署后必须用带 `source_url` 的 `POST /api/tasks` 冒烟一次链接任务（历史 500 正是文件混搭导致链接创建路径崩溃），确认返回 201 且 `initial_prompt`/`has_douyin_cookie` 字段正常，再清理测试任务。
 - 推理、模型、CUDA、ffmpeg 或依赖变更必须再跑一个真实 CUDA 音视频任务，核对 `model_name`、`language_detected`、`device=cuda`、`compute_type=int8_float16` 和结果文件。
 - 用 `nvidia-smi` 确认推理进程与显存；完成后确认 Worker 回到空闲、队列清零、容器无重启。
 - 浏览器相关变更必须在生产页面重新验证，不能只看静态资源是否返回 200。

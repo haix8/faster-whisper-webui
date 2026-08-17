@@ -82,10 +82,10 @@ test("long timelines use a bounded, independently scrollable region", () => {
   );
 });
 
-test("index loads the coordinated 0.1.12 static asset revision", () => {
-  assert.match(htmlSource, /styles\.css\?v=0\.1\.12/);
-  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.12/);
-  assert.match(htmlSource, /app\.js\?v=0\.1\.12/);
+test("index loads the coordinated 0.1.13 static asset revision", () => {
+  assert.match(htmlSource, /styles\.css\?v=0\.1\.13/);
+  assert.match(htmlSource, /upload-id\.js\?v=0\.1\.13/);
+  assert.match(htmlSource, /app\.js\?v=0\.1\.13/);
 });
 
 test("link source mode creates douyin tasks without a file", () => {

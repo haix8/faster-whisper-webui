@@ -30,6 +30,7 @@ class WorkerSnapshot:
     available: bool = False
     worker_id: str = ""
     current_task_id: str | None = None
+    downloading_task_id: str | None = None
     backend: str = ""
     device: str = ""
     compute_type: str = ""
@@ -58,6 +59,7 @@ class TranscriptionWorker:
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._download_thread: threading.Thread | None = None
         self._snapshot = WorkerSnapshot(worker_id=self.worker_id)
         self._snapshot_lock = threading.Lock()
 
@@ -71,14 +73,21 @@ class TranscriptionWorker:
             name="transcription-worker",
             daemon=True,
         )
+        self._download_thread = threading.Thread(
+            target=self._download_loop,
+            name="download-worker",
+            daemon=True,
+        )
         self._thread.start()
+        self._download_thread.start()
         return recovery
 
     def stop(self, timeout: float = 10) -> None:
         self._stop_event.set()
         self._wake_event.set()
-        if self._thread:
-            self._thread.join(timeout=timeout)
+        for thread in (self._thread, self._download_thread):
+            if thread:
+                thread.join(timeout=timeout)
 
     def wake(self) -> None:
         self._wake_event.set()
@@ -119,7 +128,7 @@ class TranscriptionWorker:
                     self._set_snapshot(
                         available=True,
                         current_task_id=None,
-                        detail="Worker 空闲",
+                        detail=self._idle_detail(),
                         last_seen_at=time.time(),
                     )
                     self._wait(self.settings.worker_poll_seconds)
@@ -149,6 +158,106 @@ class TranscriptionWorker:
             detail="Worker 已停止",
             last_seen_at=time.time(),
         )
+
+    def _download_loop(self) -> None:
+        """下载线程：与转写线程并行，只做链接任务解析/下载，不加载模型。"""
+        while not self._stop_event.is_set():
+            try:
+                task = self.database.claim_next_download(self.worker_id)
+                if not task:
+                    self._set_snapshot(
+                        downloading_task_id=None,
+                        last_seen_at=time.time(),
+                    )
+                    self._wait(self.settings.worker_poll_seconds)
+                    continue
+                self._set_snapshot(
+                    downloading_task_id=task["id"],
+                    last_seen_at=time.time(),
+                )
+                self._download_task(task)
+            except Exception:
+                logger.exception("download worker loop failed")
+                self._set_snapshot(
+                    downloading_task_id=None,
+                    last_seen_at=time.time(),
+                )
+                self._wait(min(5.0, self.settings.worker_poll_seconds * 5))
+        self._set_snapshot(
+            downloading_task_id=None,
+            last_seen_at=time.time(),
+        )
+
+    def _download_task(self, task: dict[str, object]) -> None:
+        task_id = str(task["id"])
+        heartbeat_stop = threading.Event()
+        heartbeat = threading.Thread(
+            target=self._heartbeat_loop,
+            args=(task_id, heartbeat_stop),
+            name=f"download-heartbeat-{task_id[:8]}",
+            daemon=True,
+        )
+        heartbeat.start()
+        try:
+            self._raise_if_interrupted(task_id)
+            source_path = self.storage.source_path(
+                task_id, str(task["source_extension"])
+            )
+            self._download_source(
+                task_id,
+                str(task["source_url"]),
+                source_path,
+                cookie=task.get("douyin_cookie"),
+            )
+            # 下载完成放回队列：保留原排队时间，转写线程空闲后按序接手。
+            self.database.release_to_queue(
+                task_id,
+                "下载完成，等待转写",
+                stage=TaskStage.DOWNLOADING,
+                reset_queued_at=False,
+            )
+            logger.info("download completed task_id=%s", task_id)
+        except TaskCancelled:
+            self.database.finish_cancelled(task_id)
+            logger.info("download cancelled task_id=%s", task_id)
+        except WorkerStopping:
+            self.database.release_to_queue(
+                task_id, "服务停止，任务已恢复排队", stage=TaskStage.DOWNLOADING
+            )
+            logger.info("download interrupted by stop task_id=%s", task_id)
+        except Exception as error:
+            logger.exception("download task failed task_id=%s", task_id)
+            if self._should_auto_requeue(task):
+                self.database.release_to_queue(
+                    task_id,
+                    f"抖音解析/下载失败，已自动重新排队：{_safe_error(error)}",
+                    stage=TaskStage.DOWNLOADING,
+                )
+                logger.warning(
+                    "download failed, auto requeue task_id=%s attempts=%s",
+                    task_id,
+                    task.get("attempts"),
+                )
+            else:
+                self.database.finish_failure(
+                    task_id,
+                    getattr(error, "code", "PROCESSING_FAILED"),
+                    _safe_error(error),
+                )
+        finally:
+            heartbeat_stop.set()
+            heartbeat.join(timeout=2)
+            self._set_snapshot(
+                downloading_task_id=None,
+                last_seen_at=time.time(),
+            )
+
+    def _idle_detail(self) -> str:
+        with self._snapshot_lock:
+            downloading_id = self._snapshot.downloading_task_id
+        if downloading_id:
+            return f"正在下载视频 {downloading_id[:8]}"
+        return "Worker 空闲"
 
     def _process_task(self, task: dict[str, object]) -> None:
         task_id = str(task["id"])

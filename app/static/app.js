@@ -261,11 +261,16 @@ function renderSystemStatus(status) {
   elements.statusPill.className = `status-pill ${online ? "online" : "offline"}`;
   elements.statusPillText.textContent = online ? "服务可用" : "Worker 不可用";
   elements.statusPill.title = worker.detail || "";
-  elements.workerState.textContent = worker.current_task_id
-    ? "正在处理"
-    : worker.available
-      ? "空闲"
-      : worker.detail || "不可用";
+  elements.workerState.textContent = worker.current_task_id &&
+    worker.downloading_task_id
+    ? "转写中 · 下载中"
+    : worker.current_task_id
+      ? "正在处理"
+      : worker.downloading_task_id
+        ? "正在下载"
+        : worker.available
+          ? "空闲"
+          : worker.detail || "不可用";
   elements.deviceState.textContent = `${String(worker.device || "—").toUpperCase()}${
     worker.compute_type ? ` / ${worker.compute_type}` : ""
   }`;

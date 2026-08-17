@@ -65,15 +65,35 @@ def wait_for_status(
     raise AssertionError(f"task did not reach {expected}")
 
 
+def wait_for_stage(client: TestClient, task_id: str, stage: str) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        task = client.get(f"/api/tasks/{task_id}").json()
+        if task["stage"] == stage:
+            return task
+        time.sleep(0.02)
+    raise AssertionError(f"task did not reach stage {stage}")
+
+
+def wait_for_queued_with_source(client: TestClient, task_id: str) -> dict:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        task = client.get(f"/api/tasks/{task_id}").json()
+        if task["status"] == "queued" and task.get("source_path"):
+            return task
+        time.sleep(0.02)
+    raise AssertionError("link task did not finish downloading")
+
+
 def test_index_disables_browser_cache(settings: Settings) -> None:
     with TestClient(create_app(settings)) as client:
         response = client.get("/")
 
         assert response.status_code == 200
         assert response.headers["cache-control"] == "no-store"
-        assert "/static/styles.css?v=0.1.12" in response.text
-        assert "/static/upload-id.js?v=0.1.12" in response.text
-        assert "/static/app.js?v=0.1.12" in response.text
+        assert "/static/styles.css?v=0.1.13" in response.text
+        assert "/static/upload-id.js?v=0.1.13" in response.text
+        assert "/static/app.js?v=0.1.13" in response.text
 
 
 def test_config_exposes_default_language(settings: Settings) -> None:
@@ -720,3 +740,86 @@ def test_failed_file_delete_remains_visible_and_retriable(
         retried = client.delete(f"/api/tasks/{task['id']}")
         assert retried.status_code == 204
         assert client.get(f"/api/tasks/{task['id']}").status_code == 404
+
+
+def test_link_download_runs_while_another_task_transcribes(
+    settings: Settings, monkeypatch
+) -> None:
+    """转写进行中，排队的链接任务由下载线程并行完成解析与下载。"""
+    from app.backends.fake import FakeBackend
+
+    payload = wav_bytes(1.0)
+    original_transcribe = FakeBackend.transcribe
+
+    def slow_transcribe(self, *args, **kwargs):
+        time.sleep(1.2)
+        return original_transcribe(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeBackend, "transcribe", slow_transcribe)
+
+    def fake_resolve(
+        text: str, *, is_cancelled, is_stopping, cookie=None
+    ) -> DouyinVideo:
+        del text, is_cancelled, is_stopping, cookie
+        return DouyinVideo(
+            video_id="7664455344306834715",
+            title="并行下载测试",
+            duration_ms=1000,
+            play_url="https://aweme.snssdk.com/aweme/v1/play/",
+        )
+
+    def fake_download(
+        play_url,
+        destination,
+        *,
+        size_limit,
+        on_progress,
+        is_cancelled,
+        is_stopping,
+        cookie=None,
+    ) -> tuple[int, str]:
+        del play_url, size_limit, is_cancelled, is_stopping, cookie
+        destination.write_bytes(payload)
+        on_progress(len(payload), len(payload))
+        return len(payload), "ef" * 32
+
+    def fake_probe(path, ffprobe_bin, max_duration) -> MediaInfo:
+        del ffprobe_bin, max_duration
+        return MediaInfo(
+            duration_seconds=1,
+            format_name="wav",
+            audio_codec="pcm_s16le",
+            audio_channels=1,
+            sample_rate=16_000,
+            source_path=path,
+        )
+
+    monkeypatch.setattr("app.worker.resolve_douyin_share", fake_resolve)
+    monkeypatch.setattr("app.worker.download_video", fake_download)
+    monkeypatch.setattr("app.worker.probe_media", fake_probe)
+
+    with TestClient(create_app(settings)) as client:
+        upload_task = create_and_upload(client)
+        wait_for_stage(client, upload_task["id"], "transcribing")
+
+        created = client.post(
+            "/api/tasks",
+            json={
+                "source_url": "https://v.douyin.com/FAV7NYgWNuE/",
+                "model": "tiny",
+                "language": "zh",
+            },
+        ).json()
+        assert created["status"] == "queued"
+
+        downloaded = wait_for_queued_with_source(client, created["id"])
+        assert downloaded["source_url"] == "https://v.douyin.com/FAV7NYgWNuE"
+        assert downloaded["size_bytes"] == len(payload)
+
+        still_transcribing = client.get(f"/api/tasks/{upload_task['id']}").json()
+        assert still_transcribing["status"] == "running"
+        assert still_transcribing["stage"] == "transcribing"
+
+        wait_for_status(client, upload_task["id"], {"succeeded"})
+        completed = wait_for_status(client, created["id"], {"succeeded"})
+        assert completed["sha256"] == "ef" * 32

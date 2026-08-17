@@ -384,14 +384,44 @@ class Database:
             )
 
     def claim_next_task(self, worker_id: str) -> dict[str, Any] | None:
+        """转写线程领取：无需下载或源文件已就绪的排队任务。"""
+        return self._claim_next(
+            worker_id,
+            where="(source_url IS NULL OR source_path IS NOT NULL)",
+            stage=TaskStage.STARTING,
+            message="准备转写",
+        )
+
+    def claim_next_download(self, worker_id: str) -> dict[str, Any] | None:
+        """下载线程领取：排队中且尚未下载源文件的链接任务。
+
+        下载完成（source_path 落库）后任务回到 queued，由转写线程接手；
+        下载失败释放后仍满足本条件，由下载线程按 attempts 重试。
+        """
+        return self._claim_next(
+            worker_id,
+            where="source_url IS NOT NULL AND source_path IS NULL",
+            stage=TaskStage.DOWNLOADING,
+            message="正在准备下载",
+        )
+
+    def _claim_next(
+        self,
+        worker_id: str,
+        *,
+        where: str,
+        stage: TaskStage,
+        message: str,
+    ) -> dict[str, Any] | None:
+        # where 仅由内部常量条件拼接，不接收外部输入。
         now = utc_now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 row = connection.execute(
-                    """
+                    f"""
                     SELECT * FROM tasks
-                    WHERE status = ? AND cancel_requested = 0
+                    WHERE status = ? AND cancel_requested = 0 AND {where}
                     ORDER BY queued_at ASC, created_at ASC
                     LIMIT 1
                     """,
@@ -412,8 +442,8 @@ class Database:
                     """,
                     (
                         TaskStatus.RUNNING,
-                        TaskStage.STARTING,
-                        "准备转写",
+                        stage,
+                        message,
                         worker_id,
                         now,
                         now,
@@ -565,18 +595,27 @@ class Database:
                 ),
             )
 
-    def release_to_queue(self, task_id: str, message: str) -> None:
+    def release_to_queue(
+        self,
+        task_id: str,
+        message: str,
+        *,
+        stage: TaskStage | None = None,
+        reset_queued_at: bool = True,
+    ) -> None:
         now = utc_now()
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
-                row = connection.execute(
-                    """
-                    SELECT cancel_requested FROM tasks
-                    WHERE id = ? AND status = ?
-                    """,
-                    (task_id, TaskStatus.RUNNING),
-                ).fetchone()
+                query = (
+                    "SELECT cancel_requested, queued_at FROM tasks "
+                    "WHERE id = ? AND status = ?"
+                )
+                params: list[Any] = [task_id, TaskStatus.RUNNING]
+                if stage is not None:
+                    query += " AND stage = ?"
+                    params.append(stage.value)
+                row = connection.execute(query, params).fetchone()
                 if not row:
                     connection.commit()
                     return
@@ -602,6 +641,9 @@ class Database:
                         ),
                     )
                 else:
+                    # 下载完成后释放默认保留原排队时间，避免插队；
+                    # 失败重试等场景可重置 queued_at 排到队尾。
+                    queued_at = now if reset_queued_at else (row["queued_at"] or now)
                     connection.execute(
                         """
                         UPDATE tasks
@@ -616,7 +658,7 @@ class Database:
                             TaskStatus.QUEUED,
                             TaskStage.QUEUE,
                             message,
-                            now,
+                            queued_at,
                             now,
                             task_id,
                             TaskStatus.RUNNING,

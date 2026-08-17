@@ -31,6 +31,21 @@ def create_queued_task(database: Database, index: int) -> str:
     return task["id"]
 
 
+def create_queued_link_task(database: Database, index: int) -> str:
+    task, _ = database.create_task(
+        original_name="抖音视频",
+        source_extension=".mp4",
+        content_type=None,
+        expected_size_bytes=None,
+        language_requested="auto",
+        model_name="tiny",
+        max_attempts=2,
+        idempotency_key=f"link-key-{index}",
+        source_url=f"https://v.douyin.com/FAV7NYgWNuE{index}/",
+    )
+    return task["id"]
+
+
 def test_atomic_claim_returns_each_task_once(tmp_path: Path) -> None:
     database = Database(tmp_path / "app.sqlite3")
     database.initialize()
@@ -165,7 +180,7 @@ def test_finish_download_records_source_metadata(tmp_path: Path) -> None:
         idempotency_key="link-key-2",
         source_url="https://v.douyin.com/FAV7NYgWNuE/",
     )
-    claimed = database.claim_next_task("worker")
+    claimed = database.claim_next_download("worker")
     assert claimed is not None
     database.update_progress(
         claimed["id"],
@@ -206,7 +221,7 @@ def test_finish_download_keeps_original_name_when_absent(tmp_path: Path) -> None
         idempotency_key="link-key-3",
         source_url="https://v.douyin.com/FAV7NYgWNuE/",
     )
-    claimed = database.claim_next_task("worker")
+    claimed = database.claim_next_download("worker")
     assert claimed is not None
     database.update_progress(
         claimed["id"], stage=TaskStage.DOWNLOADING, progress=1, message="正在下载"
@@ -287,3 +302,111 @@ def test_queued_cancel_and_manual_retry(tmp_path: Path) -> None:
     retried = database.retry_task(task_id)
     assert retried["status"] == TaskStatus.QUEUED
     assert retried["attempts"] == 0
+
+
+def test_transcriber_claim_skips_undownloaded_link_tasks(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    upload_id = create_queued_task(database, 1)
+    link_id = create_queued_link_task(database, 2)
+
+    claimed = database.claim_next_task("transcriber")
+
+    assert claimed is not None
+    assert claimed["id"] == upload_id
+    assert database.claim_next_task("transcriber") is None
+    remaining = database.require_task(link_id)
+    assert remaining["status"] == TaskStatus.QUEUED
+
+
+def test_downloader_claim_only_claims_undownloaded_link_tasks(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    create_queued_task(database, 1)
+    link_id = create_queued_link_task(database, 2)
+
+    claimed = database.claim_next_download("downloader")
+
+    assert claimed is not None
+    assert claimed["id"] == link_id
+    assert claimed["status"] == TaskStatus.RUNNING
+    assert claimed["stage"] == TaskStage.DOWNLOADING
+    assert database.claim_next_download("downloader") is None
+
+
+def test_downloaded_link_task_becomes_transcriber_claimable(
+    tmp_path: Path,
+) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    link_id = create_queued_link_task(database, 7)
+    claimed = database.claim_next_download("downloader")
+    assert claimed is not None
+    database.update_progress(
+        claimed["id"], stage=TaskStage.DOWNLOADING, progress=1, message="正在下载"
+    )
+    database.finish_download(
+        claimed["id"],
+        size_bytes=1,
+        sha256="0" * 64,
+        duration_seconds=1.0,
+        media_format="mp4",
+        audio_codec="aac",
+        source_path=f"tasks/{claimed['id']}/source.mp4",
+    )
+
+    database.release_to_queue(
+        claimed["id"],
+        "下载完成，等待转写",
+        stage=TaskStage.DOWNLOADING,
+        reset_queued_at=False,
+    )
+    released = database.require_task(link_id)
+    assert released["status"] == TaskStatus.QUEUED
+    assert released["stage"] == TaskStage.QUEUE
+
+    claimed_by_transcriber = database.claim_next_task("transcriber")
+    assert claimed_by_transcriber is not None
+    assert claimed_by_transcriber["id"] == link_id
+
+
+def test_release_after_download_keeps_original_queued_at(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    link_id = create_queued_link_task(database, 8)
+    original_queued_at = database.require_task(link_id)["queued_at"]
+    claimed = database.claim_next_download("downloader")
+    assert claimed is not None
+    database.update_progress(
+        claimed["id"], stage=TaskStage.DOWNLOADING, progress=1, message="正在下载"
+    )
+
+    database.release_to_queue(
+        claimed["id"],
+        "下载完成，等待转写",
+        stage=TaskStage.DOWNLOADING,
+        reset_queued_at=False,
+    )
+    released = database.require_task(link_id)
+    assert released["status"] == TaskStatus.QUEUED
+    assert released["queued_at"] == original_queued_at
+
+
+def test_release_to_queue_requires_matching_stage(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.sqlite3")
+    database.initialize()
+    task_id = create_queued_task(database, 9)
+    database.claim_next_task("transcriber")
+    database.update_progress(
+        task_id, stage=TaskStage.PREPROCESSING, progress=3, message="正在提取音轨"
+    )
+
+    database.release_to_queue(task_id, "wrong stage", stage=TaskStage.DOWNLOADING)
+    still_running = database.require_task(task_id)
+    assert still_running["status"] == TaskStatus.RUNNING
+
+    database.release_to_queue(task_id, "correct release")
+    released = database.require_task(task_id)
+    assert released["status"] == TaskStatus.QUEUED
