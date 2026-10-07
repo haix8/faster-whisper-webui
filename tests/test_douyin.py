@@ -468,6 +468,28 @@ def test_fetch_video_info_uses_minute_backoff_on_waf_challenge(
     assert backoffs and all(value >= 30.0 for value in backoffs)
 
 
+def test_fetch_video_info_accepts_data_page_with_argus_nonce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """正常分享页的 argus 预加载脚本 nonce 不能被误判为 WAF 挑战页。"""
+    page = SHARE_HTML.replace(
+        "<head>",
+        '<head><script data-sdk-glue-in="pre-handler" '
+        'nonce="argus-csp-token"></script>',
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/aweme/v1/web/aweme/detail/"):
+            return httpx.Response(200, text="")
+        return httpx.Response(200, text=page)
+
+    monkeypatch.setattr("app.douyin._ttwid_cache", "ttwid=cached")
+    monkeypatch.setattr("app.douyin.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("app.douyin._sleep_interruptible", lambda *a, **k: None)
+    video = fetch_video_info("7664455344306834715", mock_client(handler))
+    assert video.title == "测试视频标题 #话题"
+
+
 def test_fetch_video_info_retries_then_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

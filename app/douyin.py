@@ -31,8 +31,10 @@ _VIDEO_ID_PATTERNS = (
 _PLAYWM_MARKER = "/playwm/"
 _PLAY_MARKER = "/play/"
 
-# 抖音 WAF JS Challenge 壳页的特征串。命中即判定触发风控，
-# 需要分钟级冷却，普通短退避重试无效。
+# 抖音 WAF JS Challenge 壳页的特征串。命中只用于给"没有视频数据的页面"
+# 分类错误类型（风控需要分钟级冷却，普通短退避无效）。
+# 注意：argus-csp-token 也会出现在正常分享页的预加载脚本 nonce 上，
+# 因此必须优先尝试解析内嵌数据，解析不到再按风控处理。
 _WAF_MARKERS = ("waf-jschallenge", "byted-static.com", "argus-csp-token")
 
 # 解析与下载链路允许的域名（后缀匹配）。只放行抖音及其 CDN，
@@ -509,12 +511,14 @@ def _parse_share_page(
                 )
             if not response.content or len(response.content) > _MAX_INFO_BYTES:
                 raise DouyinRateLimitError("疑似被风控拦截，分享页未返回数据，稍后重试")
+            # 正常分享页也可能带 argus 预加载脚本（argus-csp-token 只是脚本 nonce），
+            # 所以先尝试解析内嵌数据；能拿到视频信息就不按风控处理。
+            item = _extract_item_from_router_data(response.text)
+            if item is not None:
+                return _item_to_video(item, video_id)
             if _is_waf_challenge(response.text):
                 raise DouyinRateLimitError("触发抖音风控验证（WAF 拦截），请稍后重试")
-            item = _extract_item_from_router_data(response.text)
-            if item is None:
-                raise MediaValidationError("抖音分享页缺少视频信息")
-            return _item_to_video(item, video_id)
+            raise MediaValidationError("抖音分享页缺少视频信息")
         except MediaValidationError as error:
             last_error = error
     # 保留风控错误类型，让外层 fetch_video_info 使用 WAF 分钟级退避。
